@@ -1,0 +1,6 @@
+.zig-out/
+zig-out/
+.zig-pkg/
+zig-pkg/
+.zig-cache/
+zig-cache/

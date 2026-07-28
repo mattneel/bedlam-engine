@@ -79,6 +79,8 @@ Rows are per target family in `ARCHITECTURE.md` §4.1. **Dark rows are present a
 
 Verified locally against Zig 0.16.0: **all eight build targets compile clean from a Windows host with no platform SDKs installed**, including `aarch64-ios`. No row is dark.
 
+`scripts/check.ps1` re-verifies every row on every run. That is not ceremony: setting `link_libc` for `os.tag == .linux` also set it for **Android**, which reports the same tag and for which Zig cannot supply libc without the NDK. A row that was green precisely because it needs no SDK went red, and CI found it rather than the local gate. Any change touching target selection can do this, and the check costs seconds.
+
 ### Neither Web nor iOS is an executable
 
 Both targets have a host that owns the entry point, so both are built as something other than a program — see `build.zig`.

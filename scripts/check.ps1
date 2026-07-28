@@ -51,6 +51,29 @@ foreach ($mode in @("Debug", "ReleaseSafe")) {
     } $mode
 }
 
+# Every target row, from this host, with no platform SDKs installed.
+#
+# docs/CI_TIERS.md §4 makes this a property of the project, not an accident, and it is
+# easy to break without noticing: setting `link_libc` for `os.tag == .linux` also set it
+# for ANDROID, which reports the same tag — and Zig cannot provide libc for Android
+# without the NDK. That turned a green row red, and CI found it rather than this script.
+Step "six target rows build" {
+    $targets = @(
+        "x86_64-windows-gnu", "x86_64-linux-gnu", "aarch64-linux-gnu",
+        "aarch64-linux-android", "aarch64-macos", "aarch64-ios",
+        "wasm32-freestanding", "wasm32-wasi"
+    )
+    foreach ($t in $targets) {
+        zig build "-Dtarget=$t" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  $t FAILED" -ForegroundColor Red
+            return
+        }
+        Write-Host "  $t ok"
+    }
+    $global:LASTEXITCODE = 0
+}
+
 # The web target is a compile-and-run check, not a test suite: the wasm digest must match
 # the native one, which is §7's claim on the target where it is hardest to hold.
 Step "wasm32 parity" {

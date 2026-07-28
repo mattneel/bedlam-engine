@@ -18,6 +18,7 @@ const quant = @import("quant.zig");
 const fq = @import("fixedquant.zig");
 const schema_mod = @import("bedlam_schema");
 const d = schema_mod.declare;
+const storable = schema_mod.storable;
 const w = schema_mod.wire;
 
 /// The simulation's fixed-point type: `fpz.Fixed`, Q40.24 over an i64.
@@ -110,6 +111,16 @@ pub fn Storage(comptime c: d.Component) type {
             names[i] = f.name;
             types[i] = StorageType(f.sem);
         }
+        // Invariant 1, checked on the generated storage itself rather than on the
+        // declaration: AGENTS.md §2.1 forbids per-field metadata in chunks "from any
+        // subsystem, ever", and a subsystem adds it by widening a component's Zig type,
+        // not by editing schema.zig. Recursive, because the violation that survives
+        // review is a struct three levels down.
+        for (types, 0..) |T, i| {
+            storable.assertStorable(T, "component '" ++ c.name ++ "' field '" ++ names[i] ++ "'");
+            storable.assertFixedWidth(T, "component '" ++ c.name ++ "' field '" ++ names[i] ++ "'");
+        }
+
         // `.auto` layout, not `.@"extern"` or `.@"packed"`: ARCHITECTURE.md §0 P1 lets
         // physical layout differ per target, and the wire encoding below never reads
         // this struct's memory representation, only its fields by name.

@@ -10,6 +10,7 @@
 
 pub const wire = @import("wire.zig");
 pub const semantic = @import("semantic.zig");
+pub const storable = @import("storable.zig");
 pub const declare = @import("declare.zig");
 pub const registry = @import("registry.zig");
 pub const schema = @import("schema.zig");
@@ -18,6 +19,7 @@ pub const manifest = @import("manifest.zig");
 test {
     _ = wire;
     _ = semantic;
+    _ = storable;
     _ = declare;
     _ = registry;
     _ = schema;

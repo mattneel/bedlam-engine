@@ -23,6 +23,10 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 ### Unretrofittable — violating these costs a rewrite
 
 1. **No per-field metadata in archetype chunks.** Not CRDT metadata, not undo metadata, not authoring provenance, not replication bookkeeping. Metadata goes *beside* the database, never inside it. Rollback, replay, and save/load all depend on the packed layout.
+
+   **Enforced, not merely stated** — `src/schema/storable.zig`. A type that belongs beside the database declares `pub const __no_component_store = {};`, and `assertStorable` rejects it recursively wherever component storage is generated. Recursion is the point: `field: UndoStamp` would be caught at review, and a struct three levels down that happens to contain one would not. The same walk rejects pointers (§5.2) and pointer-width integers, which are 64 bits on desktop and 32 on wasm32.
+
+   If you need causality *in* state — §6's provenance sources make that pressure real — use `storable.CauseToken`. It is a pure function of `(tick, system, ordinal)`, so it names a cause without the engine attaching anything, and without depending on whether recording is switched on. A token that varied with instrumentation would make a metered run hash differently from a production one, and §6.3's metering would change what it measures.
 2. **No durable ID derived from source order, declaration order, layout order, or symbol hash.** IDs are allocated from the checked-in registry. Removal tombstones permanently. See `docs/SCHEMA_AND_EVOLUTION.md`.
 3. **The four state projections are not the same bytes.** Rollback pages, per-client replication baselines, save state, and replay logs derive from one schema and one change journal, and have four different representations. Do not "simplify" them into one.
 4. **"Page" means an engine-owned logical block.** Never `mprotect`, never VM page protection, never remapping. It works on desktop and dies on Web.

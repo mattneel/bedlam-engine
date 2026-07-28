@@ -238,7 +238,20 @@ fn addCrossStep(b: *std.Build) void {
         for (modes) |mode| {
             const mods = engineModules(b, rt, mode, false);
 
-            for ([_]*std.Build.Module{ mods.schema, mods.wire, mods.sim, mods.world, mods.net }) |m| {
+            // The portable half of the platform layer belongs in this gate too. The mixer
+            // is integer Q16 arithmetic over a comptime-built pan table and a `usize`
+            // sample cursor — a byte-order or word-size bug there is exactly the class
+            // this step exists to catch, and it would otherwise be checked only on
+            // x86_64. Rooted at the file rather than `platform/root.zig` so the gate does
+            // not drag in filesystem and backend-selection code that has nothing to say
+            // about endianness.
+            const portable_platform = b.createModule(.{
+                .root_source_file = b.path("platform/mixer.zig"),
+                .target = rt,
+                .optimize = mode,
+            });
+
+            for ([_]*std.Build.Module{ mods.schema, mods.wire, mods.sim, mods.world, mods.net, portable_platform }) |m| {
                 const t = b.addTest(.{ .root_module = m });
                 const run = b.addRunArtifact(t);
                 // Foreign binaries are cached aggressively; without this a green run can

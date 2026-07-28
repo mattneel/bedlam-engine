@@ -10,6 +10,8 @@ pub const chunk = @import("chunk.zig");
 pub const page = @import("page.zig");
 pub const table = @import("table.zig");
 pub const journal = @import("journal.zig");
+pub const world = @import("world.zig");
+pub const hash = @import("hash.zig");
 
 test {
     _ = entity;
@@ -17,4 +19,6 @@ test {
     _ = page;
     _ = table;
     _ = journal;
+    _ = world;
+    _ = hash;
 }

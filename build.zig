@@ -267,13 +267,8 @@ fn addCrossStep(b: *std.Build) void {
             wire.addImport("bedlam_schema", schema);
             wire.addImport("fpz", fpz_dep.module("fpz"));
 
-            const sim = b.createModule(.{
-                .root_source_file = b.path("src/sim/root.zig"),
-                .target = rt,
-                .optimize = mode,
-            });
-            sim.addImport("fpz", fpz_dep.module("fpz"));
-
+            // world before sim: sim/step.zig steps a World and hashes it, so the
+            // determinism harness is part of what the foreign architectures verify.
             const world = b.createModule(.{
                 .root_source_file = b.path("src/world/root.zig"),
                 .target = rt,
@@ -281,6 +276,14 @@ fn addCrossStep(b: *std.Build) void {
             });
             world.addImport("bedlam_schema", schema);
             world.addImport("fpz", fpz_dep.module("fpz"));
+
+            const sim = b.createModule(.{
+                .root_source_file = b.path("src/sim/root.zig"),
+                .target = rt,
+                .optimize = mode,
+            });
+            sim.addImport("fpz", fpz_dep.module("fpz"));
+            sim.addImport("bedlam_world", world);
 
             for ([_]*std.Build.Module{ schema, wire, sim, world }) |m| {
                 const t = b.addTest(.{ .root_module = m });

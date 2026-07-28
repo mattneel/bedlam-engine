@@ -152,4 +152,93 @@ pub fn build(b: *std.Build) void {
 
     const wire_tests = b.addTest(.{ .root_module = wire_mod });
     test_step.dependOn(&b.addRunArtifact(wire_tests).step);
+
+    addCrossStep(b);
+}
+
+/// Foreign-architecture verification under qemu.
+///
+/// `ARCHITECTURE.md` §7 says bit-exact cross-architecture float determinism is folklore
+/// and that agreement is constructed, never assumed. Constructing it requires actually
+/// running on a foreign architecture, and the CI matrix cannot: **all six shipping
+/// targets are little-endian and, apart from wasm32, 64-bit.** So no target Bedlam ships
+/// can falsify an endianness bug, and none of the ones that execute tests can falsify a
+/// word-size bug.
+///
+/// Two live claims are currently constructed by comment rather than by test:
+///
+///   - `src/wire/bits.zig` fixes bit order LSB-first "not derived from host endianness".
+///     s390x and mips are big-endian and will say whether that is true.
+///   - `src/wire/bits.zig` widened bit offsets to u64 specifically for wasm32, and the
+///     regression test asserts type widths rather than behaviour because no 32-bit
+///     runner exists. arm and mips are usable word-size proxies for wasm32, which cannot
+///     run a Zig test binary directly.
+///
+/// The mechanism is Zig's own: `enable_qemu` makes foreign `RunArtifact` steps execute
+/// under qemu-user instead of being skipped. Nothing here links libc, so the test
+/// binaries are static and qemu-user runs them directly.
+///
+/// Adapted from gkz's `zig build cross` (github.com/mattneel/gkz), which verifies the
+/// same property for the same reason.
+fn addCrossStep(b: *std.Build) void {
+    const cross_step = b.step(
+        "cross",
+        "Run the test suite on foreign architectures under qemu (big-endian and 32-bit)",
+    );
+
+    // Set here rather than requiring `-fqemu` on the command line. Without it, foreign
+    // RunArtifact steps are silently SKIPPED, and a skipped step reports success — the
+    // failure mode where the gate appears green precisely because it never ran.
+    b.enable_qemu = true;
+
+    const triples = [_][]const u8{
+        "aarch64-linux-gnu", // the other shipping ISA
+        "s390x-linux-gnu", // big-endian, 64-bit
+        "arm-linux-gnueabihf", // little-endian, 32-bit — word-size proxy for wasm32
+        "mips-linux-gnu", // big-endian, 32-bit — both at once
+    };
+    const modes = [_]std.builtin.OptimizeMode{ .Debug, .ReleaseSafe };
+
+    // Serialized rather than parallel: qemu-user emulation is slow and these are
+    // correctness checks, not a throughput exercise. Chaining also keeps the log
+    // readable when one architecture fails and the others do not.
+    var prev: ?*std.Build.Step = null;
+
+    for (triples) |triple| {
+        const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch
+            @panic("cross: bad target triple");
+        const rt = b.resolveTargetQuery(query);
+
+        for (modes) |mode| {
+            const fpz_dep = b.dependency("fpz", .{ .target = rt, .optimize = mode });
+
+            const schema = b.createModule(.{
+                .root_source_file = b.path("src/schema/root.zig"),
+                .target = rt,
+                .optimize = mode,
+            });
+            schema.addAnonymousImport("registry_text", .{
+                .root_source_file = b.path("schema/registry.txt"),
+            });
+
+            const wire = b.createModule(.{
+                .root_source_file = b.path("src/wire/root.zig"),
+                .target = rt,
+                .optimize = mode,
+            });
+            wire.addImport("bedlam_schema", schema);
+            wire.addImport("fpz", fpz_dep.module("fpz"));
+
+            for ([_]*std.Build.Module{ schema, wire }) |m| {
+                const t = b.addTest(.{ .root_module = m });
+                const run = b.addRunArtifact(t);
+                // Foreign binaries are cached aggressively; without this a green run can
+                // mean "did not execute" rather than "passed".
+                run.has_side_effects = true;
+                if (prev) |p| run.step.dependOn(p);
+                prev = &run.step;
+                cross_step.dependOn(&run.step);
+            }
+        }
+    }
 }

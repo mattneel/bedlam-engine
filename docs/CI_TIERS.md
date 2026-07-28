@@ -117,7 +117,27 @@ Check 5 is structurally guaranteed as well as tested — `wire.Layout` has no pa
 
 ### Rows not yet present
 
-- **Cross-ISA determinism.** `ARCHITECTURE.md` §7 requires fixed-point inside the rollback boundary, no FMA contraction, no fast-math, own polynomial transcendentals, and fixed-tree reductions. Nothing enforces any of that except running the same simulation on two ISAs and comparing per-tick hashes. The matrix above already provides x86_64 and aarch64 natively across three operating systems, which is the substrate. The row is blocked on `--verify-determinism` existing, not on hardware. **This is the highest-value job in Tier C and should land with the first tick loop, per `AGENTS.md` §3.**
+### Foreign-architecture verification — live
+
+`zig build cross` runs the schema and wire suites under qemu-user on **aarch64, s390x, arm, and mips**, in Debug and ReleaseSafe. It exists because the hosted matrix cannot falsify two whole classes of bug:
+
+> **Every one of Bedlam's six shipping targets is little-endian, and every target that can execute a test binary is 64-bit.** A byte-order dependency or a word-size assumption can be green on all eight rows and still be wrong.
+
+s390x and mips are big-endian; arm and mips are 32-bit; mips is both. That converts three claims from comments into tests:
+
+- `src/wire/bits.zig` fixes bit order LSB-first and states it is "not derived from host endianness" — now checked on two big-endian architectures.
+- The `u64` bit-offset widening was made specifically for wasm32, but wasm32 cannot run a Zig test binary. arm and mips are the word-size proxies.
+- **The compatibility fingerprint is pinned** (`manifest.pinned_fingerprint`) and asserted equal on every architecture. This is `SCHEMA_AND_EVOLUTION.md` §10 check 5 in its strongest available form: not "layout does not leak" measured in one process, but one digest verified byte-identical across word sizes and byte orders. A canonical serialization that silently depended on host byte order would make two builds of the same commit refuse to connect, and nothing in the shipping matrix would notice.
+
+`enable_qemu` is set in `build.zig` rather than requiring `-fqemu`, because without it foreign run steps are **silently skipped** — and a skipped step reports success, which is the failure mode where a gate looks green precisely because it never ran.
+
+Adapted from [gkz](https://github.com/mattneel/gkz)'s `zig build cross`, which verifies the same property for the same reason.
+
+### Rows still not present
+
+- **Cross-ISA determinism of the simulation.** The row above verifies the *codec and schema* agree across architectures. `ARCHITECTURE.md` §7's stronger claim — that the simulation itself steps identically — needs `--verify-determinism` and a tick loop to hash. The substrate now exists on four foreign architectures rather than the two the hosted matrix provides, so when the tick loop lands this becomes a configuration change rather than new infrastructure.
+
+  **Open question to settle before writing the flag: which artifact does it hash?** Chunk-page bytes are the obvious candidate and are *illegal* — §0 P1 permits physical layout to differ per target, so two conformant targets would diverge by design. It has to hash a canonical logical projection, and which one is a decision, not a detail.
 - **Migration edges, negotiation, and the corpus.** `SCHEMA_AND_EVOLUTION.md` §5, §6, §11 and §10's checks 6, 7 and 8 are not implemented. They need a released schema version to migrate from, so they land with the second one. Checks 1, 2, 3, 4, 5, 9 and 10 are live — see below.
 - **Android emulator and iOS Simulator.** Cover lifecycle, suspend/resume, and device loss (`AGENTS.md` §4) without physical hardware. Neither produces a number.
 - **iOS app bundle — package, sign, install, launch.** The static-library row proves the portable core compiles for iOS. It proves nothing about whether an app runs, and must never be read as though it did. This needs the Objective-C entry TU, an `Info.plist`, entitlements, a signing identity, and a `macos-latest` runner with the `--libc` file above. It is an `AGENTS.md` §4 M0 exit criterion in its own right.

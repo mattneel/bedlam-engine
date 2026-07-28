@@ -195,6 +195,34 @@ jobs:
           test -n "$fp" || { echo "::error::no fingerprint in manifest"; exit 1; }
 
   # ---------------------------------------------------------------------------
+  # Foreign-architecture verification under qemu. ARCHITECTURE.md §7.
+  #
+  # This exists because the matrix above CANNOT falsify two whole classes of bug:
+  # every one of Bedlam's six shipping targets is little-endian, and every one that
+  # executes tests is 64-bit. So a byte-order dependency or a word-size assumption
+  # can be green on all eight rows and still be wrong.
+  #
+  # s390x and mips are big-endian; arm and mips are 32-bit. Together they cover both,
+  # and mips covers both at once. Runs per-commit: it is pure CPU, needs no device,
+  # and catches the errors that are least visible anywhere else.
+  # ---------------------------------------------------------------------------
+  cross:
+    name: cross (qemu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: install qemu-user
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+      - name: aarch64 · s390x (BE) · arm (32) · mips (32, BE)
+        run: zig build cross --summary all
+
+  # ---------------------------------------------------------------------------
   # Fuzzing. AGENTS.md §3: "Every parser gets a fuzz target."
   #
   # `--release=safe` is REQUIRED, not a tuning choice. In Debug, Zig 0.16.0 fails to

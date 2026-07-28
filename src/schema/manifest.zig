@@ -421,6 +421,35 @@ test "check 4 — manifest is byte-identical across two runs of the same commit"
     try std.testing.expectEqualStrings(a, b);
 }
 
+/// The fingerprint of the schema as currently declared.
+///
+/// Pinned deliberately. `SCHEMA_AND_EVOLUTION.md` §4 says the fingerprint answers one
+/// question at connection time — can these two builds exchange state — so a change to it
+/// is a change to who can talk to whom. Pinning turns that into an explicit diff instead
+/// of a value nobody looks at, which is the same argument §13 makes for change-controlling
+/// benchmark parameters.
+///
+/// **Updating this constant is correct when the schema genuinely changed, and is a
+/// mistake otherwise.** If it moves without a registry diff in the same commit, something
+/// that §4 says is not covered has leaked into the covered set.
+pub const pinned_fingerprint: *const [64]u8 =
+    "ca80a08a6cea22036cff9d6c529992e925e56dc953afe1cc0c5a43a41044d8f4";
+
+test "check 5, strongest form — the fingerprint is one value on every architecture" {
+    // The in-process test below varies `Layout` and proves layout does not leak. This
+    // one pins the actual digest, so `zig build cross` re-checks it on s390x and mips
+    // (big-endian) and on arm and mips (32-bit).
+    //
+    // That matters because none of Bedlam's six shipping targets can falsify an
+    // endianness bug — all of them are little-endian. A canonical serialization that
+    // silently depended on host byte order would produce a different fingerprint on a
+    // big-endian host, two builds of the same commit would refuse to connect, and
+    // nothing in the shipping matrix would ever notice.
+    const gpa = std.testing.allocator;
+    const fp = try fingerprint(gpa, manifest, wire.Layout.desktop);
+    try std.testing.expectEqualStrings(pinned_fingerprint, &fp);
+}
+
 test "check 5 — fingerprint is identical across per-target physical layouts" {
     // The subtle one. ARCHITECTURE.md §0 P1 permits layout to differ per target and
     // forbids semantic schema from differing. If layout leaks into the fingerprint,

@@ -16,12 +16,13 @@
 //! So: fixed mtimes, fixed uid/gid, fixed permissions, entries in sorted order. Nothing
 //! here reads the clock.
 //!
-//! **The archive layer being deterministic is not the whole claim, so the rest was
-//! measured.** Release builds reproduce on Windows and Linux with no environment setup;
-//! Debug does not — on Windows it needs `SOURCE_DATE_EPOCH` to pin the PE TimeDateStamp,
-//! and on Linux it does not reproduce at all under Zig 0.16. That costs nothing here: a
-//! distributable is a release build. The numbers, and two wrong conclusions drawn along the
-//! way, are in `docs/UPSTREAM_FINDINGS.md` §6.
+//! **The archive layer is deterministic and that is the part this file is responsible for.**
+//! Whether the BINARY going into it is reproducible is a separate, upstream question, and
+//! the answer is not uniform: Windows PE reproduces in every mode measured, Linux ELF
+//! reproduces under WSL2 and does not on a hosted `ubuntu-latest` runner. So the honest
+//! scope of the claim here is the archive, which is unit-tested, plus whatever the
+//! toolchain gives on a given host. `docs/UPSTREAM_FINDINGS.md` §6 has the measurements and
+//! the three over-claims made along the way.
 //!
 //! `scripts/reproducible.ps1` is the gate. It builds twice from a CLEARED cache — reusing
 //! it would prove only that Zig cached the artifact — and varies the optimize mode as a

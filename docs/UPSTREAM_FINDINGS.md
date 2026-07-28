@@ -161,11 +161,21 @@ CI job.
 
 Two cold builds (cache cleared between), same commit, same host:
 
-| Mode | Windows PE | Linux ELF |
-|---|---|---|
-| `Debug` | reproducible **only with `SOURCE_DATE_EPOCH`** | **not** reproducible |
-| `ReleaseSafe` | reproducible, no environment needed | reproducible, no environment needed |
-| `ReleaseSmall` | reproducible | reproducible |
+| Mode | Windows PE | Linux ELF (WSL2) | Linux ELF (GitHub runner) |
+|---|---|---|---|
+| `Debug` | reproducible **only with `SOURCE_DATE_EPOCH`** | **not** reproducible | not measured |
+| `ReleaseSafe` | reproducible, no environment needed | reproducible | **not** reproducible |
+| `ReleaseSmall` | reproducible | reproducible | not measured |
+
+**The last column is the point.** Two cold `ReleaseSafe` builds are byte-identical under
+WSL2 and differ on a hosted `ubuntu-latest` runner, same commit, same Zig version, same
+commands. So ELF reproducibility is host-dependent in a way I have not isolated, and any
+statement of the form "Bedlam produces reproducible builds" is currently true of Windows and
+of the archive layer, and unproven for ELF in general.
+
+The CI job stays as a **non-blocking dark row** with this named as its blocker, per
+`CI_TIERS.md` §4 — deleting it would hide the scope, and leaving it blocking would train
+people to ignore a red matrix.
 
 **Debug on Windows** differs in exactly two bytes out of 2,586,112 — `0x6a68db32` against
 `0x6a68db50`, 30 seconds apart, matching the gap between the builds:
@@ -199,7 +209,23 @@ because the timestamp is not taken from it there: the control passed trivially a
 have certified a pipeline that ignored its inputs entirely. The control is now the optimize
 mode, which demonstrably changes the bytes.
 
-**Not worked around, because it does not need to be.** The gate builds `-Doptimize=ReleaseSafe`.
+**Not worked around.** The gate builds `-Doptimize=ReleaseSafe`, which is the mode a
+distributable uses, and the remaining ELF variance is upstream rather than something this
+repo can pin from the outside.
+
+### A note on how this entry was written
+
+Three claims in it were wrong before they were right, and the corrections are left visible
+on purpose:
+
+1. "`SOURCE_DATE_EPOCH` is required" — required for Debug on Windows only.
+2. "Vary the epoch as the control" — useless in release mode, where the timestamp does not
+   come from it; the control passed trivially and would have certified a broken pipeline.
+3. "Release modes reproduce" — true on this workstation, false on a hosted runner.
+
+Each was stated after a real measurement, and each generalised past what the measurement
+covered. That is the failure mode this document exists to prevent, so it earns an entry
+rather than a quiet edit.
 
 ---
 

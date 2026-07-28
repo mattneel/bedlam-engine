@@ -296,8 +296,18 @@ jobs:
   # passed trivially and would have certified a pipeline that ignored its inputs.
   # ---------------------------------------------------------------------------
   reproducible:
-    name: reproducible package
+    name: reproducible package (non-blocking)
     runs-on: ubuntu-latest
+    # Dark row, per the convention in docs/CI_TIERS.md §4: present and expected-failing
+    # with a NAMED blocker, rather than deleted. Deleting it would hide the scope; leaving
+    # it blocking would train people to ignore a red matrix.
+    #
+    # Blocker: ELF reproducibility is host-dependent. Two cold ReleaseSafe builds are
+    # byte-identical under WSL2 and are NOT on this runner. Windows PE is reproducible in
+    # every mode measured. The archive layer itself is deterministic and unit-tested, so
+    # what is unresolved is the compiler's ELF output, not this repo's packaging.
+    # See docs/UPSTREAM_FINDINGS.md §6.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2

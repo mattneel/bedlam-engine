@@ -92,7 +92,7 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 | 7 | device loss and recovery | ✅ events + state machine | ◐ Linux has no device-loss source yet |
 | 8 | Worker + OffscreenCanvas (Web) | — | ✅ verified in headless Chrome |
 | 9 | crash capture and symbolication | ✅ capture + context | ✅ portable capture |
-| 10 | package, sign, install, launch | ◐ reproducible package; unsigned | ◐ same, per row |
+| 10 | package, sign, install, launch | ◐ archive built + deterministic; unsigned | ◐ ELF reproducibility host-dependent |
 
 **A criterion is met when it holds on all six targets, on physical devices, in CI.** None
 do. The Windows column is one machine, and `docs/CI_TIERS.md` §3 makes hosted-runner

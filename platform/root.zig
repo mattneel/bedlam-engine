@@ -17,6 +17,7 @@ pub const iface = @import("iface.zig");
 pub const assets = @import("assets.zig");
 pub const audio_ring = @import("audio_ring.zig");
 pub const crash = @import("crash.zig");
+pub const lifecycle = @import("lifecycle.zig");
 
 /// The implementation for the target being built. Selected at comptime so an unsupported
 /// target is a build error naming the gap, not a link error naming a symbol.
@@ -42,5 +43,6 @@ test {
     _ = assets;
     _ = audio_ring;
     _ = crash;
+    _ = lifecycle;
     _ = backend;
 }

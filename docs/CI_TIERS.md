@@ -133,9 +133,18 @@ s390x and mips are big-endian; arm and mips are 32-bit; mips is both. That conve
 
 Adapted from [gkz](https://github.com/mattneel/gkz)'s `zig build cross`, which verifies the same property for the same reason.
 
-### Rows still not present
+### Cross-ISA determinism of the simulation — live
 
-- **Cross-ISA determinism of the simulation.** The row above verifies the *codec and schema* agree across architectures. `ARCHITECTURE.md` §7's stronger claim — that the simulation itself steps identically — needs `--verify-determinism` and a tick loop to hash. The substrate now exists on four foreign architectures rather than the two the hosted matrix provides, so when the tick loop lands this becomes a configuration change rather than new infrastructure.
+`zig build verify-determinism` runs on all four native hosts in the `test` job, and the harness plus the canonical world hash are also compiled and run on aarch64, s390x, arm and mips by the cross gate. §7's claim that the simulation steps identically is therefore checked on two ISAs natively and four under emulation, including a big-endian 32-bit one.
+
+Two deliberate strengthenings over §7's literal wording, both recorded here because they are cheap now and expensive to retrofit:
+
+- **Anchored to a serial referent, not a second thread count.** "Run the sim twice at different thread counts" passes when both runs are wrong the same way, which is exactly what a shared scheduler bug produces.
+- **Execution order is its own axis.** §8's task graph does not promise a fixed order across thread counts, so the harness permutes system order within a tick and requires an identical per-tick hash — no threads required, and it catches order dependence a thread-count comparison can miss. Rotation rather than a random shuffle, since a shuffle returning the identity is a silent false negative.
+
+The harness is verified to be able to fail: a system with a genuine read-write dependency on another is kept out of the schedule specifically so planting it reports a divergence. A check that can only pass is not a check.
+
+### Rows still not present
 
   **Settled** — `src/world/hash.zig`. It hashes a **canonical logical projection**, not chunk bytes. Chunk bytes were the obvious candidate and are illegal: §0 P1 permits physical layout to differ per target and `chunk.Budget` makes it actually differ, so two *conformant* peers hold different chunk bytes for the same world by design. Hashing them would report a desync on every cross-platform session — the exact inverse of the bug the flag exists to find.
 

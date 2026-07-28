@@ -71,6 +71,8 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 
 **Testing.** Every parser gets a fuzz target. `--verify-determinism` runs in CI from the first tick loop. Cross-platform CI is not optional — a green build on one target proves nothing about the other five.
 
+> **Both exist.** `zig build verify-determinism` runs on every native CI host; `zig build cross` re-runs the schema, wire, world and simulation suites on aarch64, s390x, arm and mips under qemu. The second is not redundant: all six shipping targets are little-endian and every one that executes tests is 64-bit, so the hosted matrix *structurally cannot* falsify a byte-order or word-size bug.
+
 **Two CI tiers, and only one may speak about the floor.** Tier C (correctness) runs on every commit on hosted runners and is **inadmissible as evidence about P0 in either direction**. Tier M (measurement) runs on physical devices on a schedule and is the only tier `docs/BENCHMARK_CONTRACT.md` recognizes. Never cite a green matrix as a performance result. See `docs/CI_TIERS.md`.
 
 ---

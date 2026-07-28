@@ -6,6 +6,7 @@
 //! convention.
 
 pub const entity = @import("entity.zig");
+pub const archetype = @import("archetype.zig");
 pub const chunk = @import("chunk.zig");
 pub const page = @import("page.zig");
 pub const table = @import("table.zig");
@@ -15,6 +16,7 @@ pub const hash = @import("hash.zig");
 
 test {
     _ = entity;
+    _ = archetype;
     _ = chunk;
     _ = page;
     _ = table;

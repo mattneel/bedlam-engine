@@ -8,9 +8,11 @@
 pub const entity = @import("entity.zig");
 pub const chunk = @import("chunk.zig");
 pub const page = @import("page.zig");
+pub const table = @import("table.zig");
 
 test {
     _ = entity;
     _ = chunk;
     _ = page;
+    _ = table;
 }

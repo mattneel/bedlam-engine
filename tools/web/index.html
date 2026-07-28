@@ -12,6 +12,11 @@
 
 <h1>Bedlam — wasm32 conformance probe</h1>
 <dl id="out"></dl>
+
+<h1>Worker + OffscreenCanvas</h1>
+<canvas id="view" width="480" height="270"
+        style="background:#0b0d10;border:1px solid #ccc;display:block"></canvas>
+<dl id="wout"></dl>
 <small>
   Steps the same simulation the native binary runs and reports the canonical world digest.
   A matching digest is the claim <code>ARCHITECTURE.md</code> §7 makes: cross-architecture
@@ -60,4 +65,106 @@ window.__bedlam = {
   live: b.liveCount(),
   isolated: crossOriginIsolated,
 };
+
+// --- M0 criterion 8: Worker + OffscreenCanvas -------------------------------
+//
+// The main thread hands the canvas away and keeps nothing but the DOM. That is the point
+// of the criterion: on the Web, "simulation cadence does not degrade" is not a scheduling
+// policy, it is a thread-ownership decision, because the main thread is shared with
+// layout, GC and whatever else the embedding page does.
+//
+// The worker's digest is compared against the one the MAIN THREAD just computed. Equality
+// is the real claim — the same simulation, stepped in two different JS realms with two
+// different wasm instances, agreeing bit for bit.
+
+const wout = document.getElementById('wout');
+const wrow = (k, v, cls) => {
+  wout.insertAdjacentHTML('beforeend', `<dt>${k}</dt><dd class="${cls ?? ''}">${v}</dd>`);
+};
+
+const canvas = document.getElementById('view');
+if (typeof OffscreenCanvas === 'undefined' || !canvas.transferControlToOffscreen) {
+  wrow('OffscreenCanvas', 'unsupported — criterion 8 not testable here', 'bad');
+  window.__bedlam_worker = { supported: false };
+} else {
+  const offscreen = canvas.transferControlToOffscreen();
+  const worker = new Worker('./worker.mjs', { type: 'module' });
+
+  const workerDone = new Promise((resolve, reject) => {
+    worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === 'ready') {
+        wrow('worker booted', 'yes', 'ok');
+        wrow('canvas transferred', String(m.offscreen), m.offscreen ? 'ok' : 'bad');
+        wrow('worker fingerprint', m.fingerprint,
+             m.fingerprint === b.fingerprint() ? 'ok' : 'bad');
+      } else if (m.type === 'done') {
+        resolve(m);
+      } else if (m.type === 'failed') {
+        reject(new Error(m.error));
+      }
+    };
+    worker.onerror = (e) => reject(new Error(`${e.message ?? 'worker error'} @ ${e.filename ?? '?'}:${e.lineno ?? '?'}`));
+  });
+
+  worker.postMessage({
+    type: 'start',
+    wasmUrl: new URL('./bedlam_engine.wasm', location.href).href,
+    canvas: offscreen,
+    seedLo: 0xBED1A3, seedHi: 0,
+    entities: 64,
+    ticks: 128,
+  }, [offscreen]);
+
+  try {
+    const m = await workerDone;
+    const agrees = m.digest === b.digest();
+    wrow('worker ticks', m.ticks);
+    wrow('worker live', m.live);
+    wrow('frames drawn', m.frames, m.frames > 0 ? 'ok' : 'bad');
+    wrow('worker digest', m.digest, agrees ? 'ok' : 'bad');
+    wrow('agrees with main thread', String(agrees), agrees ? 'ok' : 'bad');
+
+    window.__bedlam_worker = {
+      supported: true,
+      offscreen: true,
+      digest: m.digest,
+      ticks: m.ticks,
+      live: m.live,
+      frames: m.frames,
+      agrees,
+    };
+  } catch (err) {
+    wrow('worker', String(err), 'bad');
+    window.__bedlam_worker = { supported: true, error: String(err) };
+  }
+}
+
+// A single machine-readable line for the headless harness. `--dump-dom` gives the DOM and
+// nothing else, so the verdict has to live IN the DOM rather than in the console.
+const w = window.__bedlam_worker;
+document.title = 'bedlam-result ' + JSON.stringify({
+  isolated: crossOriginIsolated,
+  digest: b.digest(),
+  worker: w,
+});
+document.body.insertAdjacentHTML('beforeend',
+  `<pre id="bedlam-result">${document.title}</pre>`);
+
+// Post the verdict back, for a headless harness.
+//
+// Not DOM scraping: `--dump-dom` snapshots whenever Chrome decides to exit, and
+// `--virtual-time-budget` — the usual way to make that deterministic — does not
+// fast-forward timers inside a WORKER. So the page would be dumped mid-run and the harness
+// would report a failure that was only impatience. A POST is a real signal from the page
+// saying it is finished, and the harness waits for it rather than guessing.
+//
+// Harmless when nothing is listening: `serve.mjs` 404s it and the page ignores the result.
+try {
+  await fetch('/result', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: document.title.slice('bedlam-result '.length),
+  });
+} catch {}
 </script>

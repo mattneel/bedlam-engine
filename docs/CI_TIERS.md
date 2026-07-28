@@ -74,7 +74,7 @@ Rows are per target family in `ARCHITECTURE.md` §4.1. **Dark rows are present a
 | macOS | ✅ cross from Linux | ✅ `macos-latest` aarch64 | lit | — |
 | Android | ✅ cross | ⬛ | partial | emulator row; NDK for GameActivity surfaces |
 | Web (`wasm32-wasi`) | ✅ cross | ⬛ | partial | second wasm config, not the shipping target |
-| Web (`wasm32-freestanding`) | ✅ cross | ⬛ | partial | the shipping target; browser harness row pending |
+| Web (`wasm32-freestanding`) | ✅ cross | ✅ headless Chrome | lit | Worker + OffscreenCanvas verified; no GPU on hosted runners |
 | iOS | ✅ cross (static lib) | ⬛ | partial | app bundle, signing and launch — see below |
 
 Verified locally against Zig 0.16.0: **all eight build targets compile clean from a Windows host with no platform SDKs installed**, including `aarch64-ios`. No row is dark.
@@ -171,7 +171,21 @@ The harness is verified to be able to fail: a system with a genuine read-write d
 - **Migration edges, negotiation, and the corpus.** `SCHEMA_AND_EVOLUTION.md` §5, §6, §11 and §10's checks 6, 7 and 8 are not implemented. They need a released schema version to migrate from, so they land with the second one. Checks 1, 2, 3, 4, 5, 9 and 10 are live — see below.
 - **Android emulator and iOS Simulator.** Cover lifecycle, suspend/resume, and device loss (`AGENTS.md` §4) without physical hardware. Neither produces a number.
 - **iOS app bundle — package, sign, install, launch.** The static-library row proves the portable core compiles for iOS. It proves nothing about whether an app runs, and must never be read as though it did. This needs the Objective-C entry TU, an `Info.plist`, entitlements, a signing identity, and a `macos-latest` runner with the `--libc` file above. It is an `AGENTS.md` §4 M0 exit criterion in its own right.
-- **Browser harness.** The web row compiles a module; nothing yet instantiates it under Worker + OffscreenCanvas + cross-origin isolation. Headless Chrome on a hosted runner has no GPU, so WebGPU would fall back to software — correctness only, never a number.
+- **Browser harness — live.** `node tools/web/browser-check.mjs [native-binary]` launches headless Chrome against a COOP/COEP server and verifies the module under **Worker + OffscreenCanvas + cross-origin isolation**. It asserts the worker owns a transferred canvas, drew frames, and produced a world digest equal to both the main thread's and the native binary's. Verified locally:
+
+  ```
+  OK   cross-origin isolated        true
+  OK   worker owns canvas           true
+  OK   worker drew frames           16 frames
+  OK   worker ticks                 128
+  OK   worker live entities         64
+  OK   worker == main thread        c52a5efc…
+  OK   browser == native            c52a5efc…
+  ```
+
+  The harness waits for the page to **POST** its verdict rather than scraping `--dump-dom` under `--virtual-time-budget`: virtual time does not fast-forward timers inside a *worker*, so a DOM scrape captures the page mid-run and reports the harness's own impatience as a failure.
+
+  A hosted runner still has no GPU, so this remains Tier C — correctness only, never a number.
 
 ---
 

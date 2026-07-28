@@ -6,3 +6,7 @@ zig-pkg/
 zig-cache/
 # Built by `zig build web`, compared against native by tools/web/check.mjs.
 tools/web/bedlam_engine.wasm
+
+# Scratch profile the browser harness gives Chrome, so a developer's real profile is
+# never touched and a headless run cannot inherit its state.
+tools/web/.chrome-profile/

@@ -36,11 +36,22 @@ createServer(async (req, res) => {
     'Content-Type': types[extname(path)] ?? 'application/octet-stream',
   };
 
+  // Read BEFORE writing the head.
+  //
+  // Writing 200 and then discovering the file is missing means the catch tries to set
+  // headers already on the wire, which throws ERR_HTTP_HEADERS_SENT — an uncaught
+  // exception in a request handler, which kills the whole server. Chrome asks for
+  // /favicon.ico on every page load, so this fired on the FIRST request and the next
+  // fetch (the worker module) failed with no diagnostic at all. It cost an hour of
+  // looking at a worker that was never broken.
+  let body = null;
   try {
-    res.writeHead(200, headers).end(await readFile(path));
+    body = await readFile(path);
   } catch {
     res.writeHead(404, headers).end('not found');
+    return;
   }
+  res.writeHead(200, headers).end(body);
 }).listen(port, () => {
   console.log(`serving ${root} on http://localhost:${port} (COOP/COEP set)`);
 });

@@ -86,6 +86,44 @@ export fn bedlamLiveCount() u32 {
     return s.liveCount();
 }
 
+/// Live entity positions, as raw fixed-point x/y pairs.
+///
+/// Exported so the Worker has something to *draw*. §4.1's M0 criterion 8 is not "a worker
+/// exists" — it is a worker owning an OffscreenCanvas and presenting the simulation, which
+/// needs the simulation's state to cross into JS.
+///
+/// **Raw `i64` halves, not floats.** `Fixed` is Q40.24 over i64 and JS numbers cannot hold
+/// an i64 exactly. Sending a pre-divided float would move the fixed-to-float conversion
+/// into the engine, where §7 says it does not belong; sending the raw halves keeps the
+/// conversion on the presentation side where a rounding difference cannot reach the
+/// simulation. The layout is `[lo, hi]` per coordinate, little-endian pairs, x then y.
+var position_buf: [4096]i32 = undefined;
+
+export fn bedlamPositions() u32 {
+    if (sim == null) return 0;
+    const s = &sim.?;
+    var n: usize = 0;
+    var it = s.table.chunkIterator();
+    outer: while (it.next()) |c| {
+        for (c.liveEntities()) |e| {
+            if (n + 4 > position_buf.len) break :outer;
+            const p = s.table.get(e, "position").?;
+            position_buf[n + 0] = @truncate(p[0].raw);
+            position_buf[n + 1] = @truncate(p[0].raw >> 32);
+            position_buf[n + 2] = @truncate(p[1].raw);
+            position_buf[n + 3] = @truncate(p[1].raw >> 32);
+            n += 4;
+        }
+    }
+    return @intFromPtr(&position_buf);
+}
+
+/// Number of i32 words `bedlamPositions` filled — four per entity.
+export fn bedlamPositionWords() u32 {
+    const s = sim orelse return 0;
+    return @min(s.liveCount() * 4, position_buf.len);
+}
+
 /// Schema fingerprint, so the page can verify it is running the build it thinks it is —
 /// `SCHEMA_AND_EVOLUTION.md` §6 makes this a connection-time decision, and the browser is
 /// a peer like any other.

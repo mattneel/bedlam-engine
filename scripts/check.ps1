@@ -58,6 +58,12 @@ Step "wasm32 parity" {
     if ($LASTEXITCODE -eq 0) { node tools/web/check.mjs ./zig-out/bin/bedlam_engine.exe }
 }
 
+# Criterion 8: the module under Worker + OffscreenCanvas + cross-origin isolation, in a
+# real browser. Node instantiating the wasm is NOT this check — §18.20.
+Step "browser (worker + offscreencanvas)" {
+    node tools/web/browser-check.mjs ./zig-out/bin/bedlam_engine.exe
+}
+
 Step "determinism" {
     zig build
     if ($LASTEXITCODE -eq 0) { ./zig-out/bin/bedlam_engine.exe --verify-determinism }

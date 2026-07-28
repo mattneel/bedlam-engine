@@ -83,13 +83,13 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 
 | # | Criterion | Windows | Other five |
 |---|---|---|---|
-| 1 | window and surface creation | ✅ Win32 | ⬛ |
-| 2 | input and text forwarding | ✅ keys, text, pointer | ⬛ |
+| 1 | window and surface creation | ✅ Win32 | ✅ Linux/X11 · ⬛ other four |
+| 2 | input and text forwarding | ✅ keys, text, pointer | ✅ Linux/X11 · ⬛ other four |
 | 3 | audio callback and AudioWorklet ring | ✅ WASAPI device + mixer | ⬛ |
 | 4 | network session establishment | ◐ handshake + UDP; no crypto | ⬛ |
 | 5 | filesystem and asset read | ✅ portable, capability-bounded | ✅ portable |
-| 6 | suspend and resume | ✅ events + state machine | ⬛ events |
-| 7 | device loss and recovery | ✅ events + state machine | ⬛ events |
+| 6 | suspend and resume | ✅ events + state machine | ✅ Linux (map/unmap) · ⬛ other four |
+| 7 | device loss and recovery | ✅ events + state machine | ◐ Linux has no device-loss source yet |
 | 8 | Worker + OffscreenCanvas (Web) | — | ✅ verified in headless Chrome |
 | 9 | crash capture and symbolication | ✅ capture + context | ✅ portable capture |
 | 10 | package, sign, install, launch | ⬛ | ⬛ |
@@ -115,6 +115,7 @@ Build the CI matrix before the second target. Six-platform CI added late is six-
 | Session handshake, ack window, UDP receiver threads | `src/net/session.zig`, `platform/udp.zig` |
 | Replication frames, acked deltas, priority accumulation | `src/net/replicate.zig`, `outbound.zig` |
 | Worker + OffscreenCanvas, verified in a real browser | `tools/web/worker.mjs`, `browser-check.mjs` |
+| X11 window and input, loaded with `dlopen` not linked | `platform/linux/window.zig` |
 
 Read that as "the kernel M1 needs is being built early because it can be verified without hardware", not as M0 progress.
 

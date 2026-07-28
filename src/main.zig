@@ -91,10 +91,17 @@ pub fn main(init: std.process.Init) !void {
             defer surface.destroy();
             surface.show();
 
+            // Paced like a frame loop rather than spun.
+            //
+            // X11 delivers map and configure asynchronously, so a loop faster than the
+            // round trip observes zero events and reports a window that never appeared —
+            // which is what the first Linux run did. 240 frames at ~60 Hz is four seconds,
+            // which is also what a person watching would expect from a window demo.
             var pumps: u32 = 0;
             var events: u32 = 0;
             while (pumps < 240 and !surface.closed) : (pumps += 1) {
                 events += @intCast(surface.pump().len);
+                plat.backend.sleepMs(16);
             }
             try out.print("  pumps        {d}\n", .{pumps});
             try out.print("  events       {d}\n", .{events});

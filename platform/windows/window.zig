@@ -131,6 +131,14 @@ pub const capabilities: iface.Capabilities = .{
 /// A window plus its event queue. The queue is owned rather than callback-driven because
 /// §8's frame loop pulls events at a defined point — a callback would run engine code at
 /// whatever moment Windows chose, including inside a modal resize loop.
+extern "kernel32" fn Sleep(DWORD) callconv(.winapi) void;
+
+/// Pace a loop. See the Linux backend for why this belongs to the platform layer and is
+/// not a frame-rate governor.
+pub fn sleepMs(ms: u32) void {
+    Sleep(ms);
+}
+
 pub const Surface = struct {
     hwnd: HWND,
     events: iface.EventQueue = .{},

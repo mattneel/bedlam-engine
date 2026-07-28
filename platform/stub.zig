@@ -13,6 +13,12 @@ const iface = @import("iface.zig");
 
 pub const capabilities: iface.Capabilities = .{};
 
+/// No timer on a target with no platform. A caller pacing a loop here spins, which is
+/// correct: the stub exists for targets whose host owns the loop entirely.
+pub fn sleepMs(ms: u32) void {
+    _ = ms;
+}
+
 pub const Surface = struct {
     events: iface.EventQueue = .{},
     size: iface.Size,

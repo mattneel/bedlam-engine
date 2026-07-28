@@ -151,6 +151,10 @@ pub fn assertSurfaceContract(comptime Backend: type) void {
                 "what it can do, because Capabilities defaults every field to false and silence " ++
                 "would read as a working backend.");
 
+        if (!@hasDecl(Backend, "sleepMs"))
+            @compileError(@typeName(Backend) ++ " has no `sleepMs` — a frame loop needs a way " ++
+                "to yield, and std dropped Thread.sleep in 0.16, so this is the platform's job.");
+
         const S = Backend.Surface;
         for ([_][]const u8{ "events", "size", "closed" }) |field| {
             if (!@hasField(S, field))

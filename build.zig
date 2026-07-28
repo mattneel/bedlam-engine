@@ -20,6 +20,17 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("platform/root.zig"),
         .target = target,
         .optimize = optimize,
+        // libc on Linux, for `dlopen` only.
+        //
+        // `platform/linux/window.zig` loads X11 at RUNTIME rather than linking it, which
+        // is what keeps the Linux row cross-compilable from a host with no X11 headers
+        // (docs/CI_TIERS.md §4). `dlopen` itself lives in libc, so libc must be linked —
+        // but Zig bundles glibc stubs, so this costs nothing in cross-compilability and
+        // is a much smaller dependency than libX11 development headers.
+        //
+        // Not set on other targets: Windows reaches the OS through its own DLL imports,
+        // and freestanding wasm has no libc at all.
+        .link_libc = target.result.os.tag == .linux,
     });
 
     const t = target.result;

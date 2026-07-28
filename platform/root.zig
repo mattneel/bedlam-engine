@@ -24,10 +24,11 @@ pub const lifecycle = @import("lifecycle.zig");
 /// target is a build error naming the gap, not a link error naming a symbol.
 pub const backend = switch (builtin.os.tag) {
     .windows => @import("windows/window.zig"),
+    .linux => @import("linux/window.zig"),
     // Every target family in §4.1 that does not yet have a backend gets the stub, which
     // claims nothing. `wasi` is here because it is a second wasm configuration used as a
     // codegen canary (docs/CI_TIERS.md §4), not a shipping target.
-    .linux, .macos, .ios, .freestanding, .wasi => @import("stub.zig"),
+    .macos, .ios, .freestanding, .wasi => @import("stub.zig"),
     else => @compileError("no platform backend for " ++ @tagName(builtin.os.tag) ++
         ". Add one under platform/, or add the tag to the stub list if it is not a " ++
         "shipping target — silence here would mean a target with no platform layer at all."),

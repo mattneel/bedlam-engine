@@ -107,6 +107,39 @@ if (typeof OffscreenCanvas === 'undefined' || !canvas.transferControlToOffscreen
     worker.onerror = (e) => reject(new Error(`${e.message ?? 'worker error'} @ ${e.filename ?? '?'}:${e.lineno ?? '?'}`));
   });
 
+  // M0 criterion 2 on the Web: the DOM owns input and an OffscreenCanvas cannot listen,
+  // so the main thread forwards. HID usages, not `KeyboardEvent.key` — `event.code` is the
+  // physical position and `key` is what the layout produced, and binding movement to `key`
+  // binds it to different physical keys per layout. Same argument the Win32 and X11
+  // backends make about scan codes and keycodes.
+  const CODE_TO_HID = {
+    KeyA: 4, KeyB: 5, KeyC: 6, KeyD: 7, KeyE: 8, KeyS: 22, KeyW: 26,
+    Escape: 41, Space: 44, ArrowRight: 79, ArrowLeft: 80, ArrowDown: 81, ArrowUp: 82,
+  };
+  const send = (event) => worker.postMessage({ type: 'input', event });
+
+  addEventListener('keydown', (e) => {
+    send({ kind: 'key_down', hid: CODE_TO_HID[e.code] ?? 0 });
+    // Text is a SEPARATE event, as everywhere else: a dead key produces none until
+    // composed, an IME produces text with no key, and Ctrl+C produces a key with no text.
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      send({ kind: 'text', cp: e.key.codePointAt(0) });
+    }
+  });
+  addEventListener('keyup', (e) => send({ kind: 'key_up', hid: CODE_TO_HID[e.code] ?? 0 }));
+  canvas.addEventListener?.('pointermove', (e) => send({ kind: 'pointer', x: e.offsetX, y: e.offsetY }));
+  addEventListener('wheel', (e) => send({ kind: 'wheel', dy: Math.sign(e.deltaY) }), { passive: true });
+
+  // Synthetic events so the harness can verify the path end to end. A headless run has no
+  // user, and an input path nobody exercises is one that can be broken for months.
+  const synthesize = () => {
+    for (const code of ['KeyW', 'KeyA', 'KeyS', 'KeyD']) {
+      dispatchEvent(new KeyboardEvent('keydown', { code, key: code.slice(3).toLowerCase() }));
+      dispatchEvent(new KeyboardEvent('keyup', { code, key: code.slice(3).toLowerCase() }));
+    }
+    dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+  };
+
   worker.postMessage({
     type: 'start',
     wasmUrl: new URL('./bedlam_engine.wasm', location.href).href,
@@ -116,12 +149,16 @@ if (typeof OffscreenCanvas === 'undefined' || !canvas.transferControlToOffscreen
     ticks: 128,
   }, [offscreen]);
 
+  synthesize();
+
   try {
     const m = await workerDone;
     const agrees = m.digest === b.digest();
     wrow('worker ticks', m.ticks);
     wrow('worker live', m.live);
     wrow('frames drawn', m.frames, m.frames > 0 ? 'ok' : 'bad');
+    wrow('input forwarded', JSON.stringify(m.input),
+         (m.input?.keys ?? 0) > 0 ? 'ok' : 'bad');
     wrow('worker digest', m.digest, agrees ? 'ok' : 'bad');
     wrow('agrees with main thread', String(agrees), agrees ? 'ok' : 'bad');
 
@@ -132,6 +169,7 @@ if (typeof OffscreenCanvas === 'undefined' || !canvas.transferControlToOffscreen
       ticks: m.ticks,
       live: m.live,
       frames: m.frames,
+      input: m.input,
       agrees,
     };
   } catch (err) {

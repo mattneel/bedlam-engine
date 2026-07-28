@@ -16,6 +16,31 @@ let canvas = null;
 let ctx = null;
 let ticks = 0;
 
+// M0 criterion 2 on the Web. Input events reach the MAIN thread — the DOM owns them and
+// an OffscreenCanvas cannot listen — so they are forwarded here and queued.
+//
+// **Queued, not applied on arrival.** A message can land at any point in the worker's
+// event loop, including between two ticks of the same frame. Applying it immediately would
+// make the tick at which an input takes effect depend on message-delivery timing, and §7's
+// determinism claim is that a tick is a function of its inputs — which requires the input
+// set for a tick to be decided by the tick boundary, not by the scheduler.
+const input_queue = [];
+const input_seen = { keys: 0, text: 0, pointer: 0, wheel: 0 };
+
+function drainInput() {
+  // Drained whole at a tick boundary. The counts are what the harness checks: an input
+  // path that silently drops events is indistinguishable from one nobody exercised.
+  while (input_queue.length > 0) {
+    const e = input_queue.shift();
+    switch (e.kind) {
+      case 'key_down': case 'key_up': input_seen.keys += 1; break;
+      case 'text': input_seen.text += 1; break;
+      case 'pointer': input_seen.pointer += 1; break;
+      case 'wheel': input_seen.wheel += 1; break;
+    }
+  }
+}
+
 const ONE = 2 ** 24; // Q40.24
 
 function post(type, extra) {
@@ -81,6 +106,11 @@ self.onunhandledrejection = (e) => post('failed', { error: `rejection: ${e.reaso
 self.onmessage = async (e) => {
   const msg = e.data;
 
+  if (msg.type === 'input') {
+    input_queue.push(msg.event);
+    return;
+  }
+
   if (msg.type === 'start') {
     try {
       await start(msg);
@@ -128,9 +158,12 @@ async function start(msg) {
           live: wasm.bedlamLiveCount(),
           digest: digestHex(),
           frames: framesDrawn,
+          input: { ...input_seen },
         });
         return;
       }
+      // Inputs are consumed at the tick boundary, before the step that will observe them.
+      drainInput();
       wasm.bedlamStep(msg.seedLo >>> 0, msg.seedHi >>> 0, perFrame);
       ticks += perFrame;
       draw();

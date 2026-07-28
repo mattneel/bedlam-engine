@@ -171,6 +171,12 @@ try {
     check('worker drew frames', r.worker.frames > 0, `${r.worker.frames} frames`);
     check('worker ticks', r.worker.ticks === 128, String(r.worker.ticks));
     check('worker live entities', r.worker.live === 64, String(r.worker.live));
+    // Criterion 2: input crossed from the DOM into the worker and was consumed at a tick
+    // boundary. Synthetic events, because a headless run has no user -- and an input path
+    // nobody exercises is one that can be broken for months.
+    const ink = r.worker.input ?? {};
+    check('input reached the worker', (ink.keys ?? 0) >= 8, `keys=${ink.keys} text=${ink.text} wheel=${ink.wheel}`);
+
     // The real claim: two wasm instances in two JS realms, same digest.
     check('worker == main thread', r.worker.agrees === true, r.worker.digest);
   }

@@ -83,8 +83,8 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 
 | # | Criterion | Windows | Other five |
 |---|---|---|---|
-| 1 | window and surface creation | ✅ Win32 | ✅ Linux/X11 · ⬛ other four |
-| 2 | input and text forwarding | ✅ keys, text, pointer | ✅ Linux/X11 · ⬛ other four |
+| 1 | window and surface creation | ✅ Win32 | ✅ Linux/X11 · ✅ Web/OffscreenCanvas · ⬛ three |
+| 2 | input and text forwarding | ✅ keys, text, pointer | ✅ Linux/X11 · ✅ Web (forwarded) · ⬛ three |
 | 3 | audio callback and AudioWorklet ring | ✅ WASAPI device + mixer | ✅ Linux/PulseAudio · ⬛ other four |
 | 4 | network session establishment | ◐ handshake + UDP; no crypto | ⬛ |
 | 5 | filesystem and asset read | ✅ portable, capability-bounded | ✅ portable |

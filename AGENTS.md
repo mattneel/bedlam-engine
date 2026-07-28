@@ -81,16 +81,23 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 
 **M0 — platform spine.** Not a triangle. Exit criteria, all six targets, on physical devices, in CI:
 
-- [ ] window and surface creation
-- [ ] input and text forwarding
-- [ ] audio callback and AudioWorklet ring
-- [ ] network session establishment
-- [ ] filesystem and asset read
-- [ ] suspend and resume
-- [ ] device loss and recovery
-- [ ] Worker + OffscreenCanvas (Web)
-- [ ] crash capture and symbolication
-- [ ] package, sign, install, launch
+| # | Criterion | Windows | Other five |
+|---|---|---|---|
+| 1 | window and surface creation | ✅ Win32 | ⬛ |
+| 2 | input and text forwarding | ✅ keys, text, pointer | ⬛ |
+| 3 | audio callback and AudioWorklet ring | ◐ lock-free ring; no device callback | ⬛ |
+| 4 | network session establishment | ⬛ | ⬛ |
+| 5 | filesystem and asset read | ✅ portable, capability-bounded | ✅ portable |
+| 6 | suspend and resume | ✅ events + state machine | ⬛ events |
+| 7 | device loss and recovery | ✅ events + state machine | ⬛ events |
+| 8 | Worker + OffscreenCanvas (Web) | — | ◐ capability probe only |
+| 9 | crash capture and symbolication | ✅ capture + context | ✅ portable capture |
+| 10 | package, sign, install, launch | ⬛ | ⬛ |
+
+**A criterion is met when it holds on all six targets, on physical devices, in CI.** None
+do. The Windows column is one machine, and `docs/CI_TIERS.md` §3 makes hosted-runner
+results inadmissible about the §1 floor in either direction — the table records what has
+been built and run, not what has been proven.
 
 Build the CI matrix before the second target. Six-platform CI added late is six-platform CI that never gets added.
 

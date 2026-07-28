@@ -12,7 +12,7 @@ A multiplayer game engine targeting Windows, Linux, macOS, Android, iOS, and Web
 
 The editor is not a separate application — it is the engine running in a client mode. Multiplayer is not a subsystem — it is the kernel.
 
-Current state: **specification only.** No implementation exists. The first task is M0 (§4).
+Current state: **M0 in progress.** The build spine, schema/identity layer, wire codecs, world database and determinism harness exist; none of the ten M0 platform criteria in §4 are met, because every one of them needs a window, a device, or a network. See §4 for what is and is not done.
 
 ---
 
@@ -54,7 +54,7 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 
 **Zig, pinned.** Do not upgrade the compiler as part of an unrelated task — Zig is pre-1.0 and upgrades are their own scheduled work.
 
-> **Current state.** `build.zig.zon` sets `minimum_zig_version = "0.16.0"`, which is a floor rather than a pin. The real pin today is `ZIG_VERSION` in `.github/workflows/ci.yml`. The toolchain is **not** vendored, there is no `zig-quickjs-ng` dependency yet, per-module optimization modes are **not** yet enforced in the build graph, and `build.zig` / `src/` are unmodified `zig init` output. The rest of this section describes the intended end state, not what is in the tree. See `docs/SPEC_DEFECTS.md` §13.
+> **Current state.** `build.zig.zon` sets `minimum_zig_version = "0.16.0"`, which is a floor rather than a pin; the real pin is `ZIG_VERSION` in `.github/workflows/ci.yml`. The toolchain is **not** vendored and there is no `zig-quickjs-ng` dependency yet. Per-module optimization mode **is** enforced for the wire module (`ReleaseSafe`, since packet parse is the untrusted side of a trust boundary) and not yet for the rest. One dependency exists: [`fpz`](https://github.com/mattneel/fpz), pinned by commit, providing §7's fixed-point contract. See `docs/SPEC_DEFECTS.md` §13.
 
 - **Allocator as parameter.** Every subsystem takes an allocator. No global allocator use, no hidden allocation.
 - **Do not build hot paths on `std`.** `std` containers are fine for tooling and setup; simulation and rendering use engine containers.
@@ -93,6 +93,18 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 - [ ] package, sign, install, launch
 
 Build the CI matrix before the second target. Six-platform CI added late is six-platform CI that never gets added.
+
+**None of the ten are done.** Every one needs a window, an audio device, a socket or a package, and none of that exists yet. What exists is underneath them:
+
+| Landed | Where |
+|---|---|
+| Build spine, eight target rows, cross gate | `build.zig`, `.github/workflows/ci.yml` |
+| Stable identity, manifest, fingerprint, §10 checks 1–5/9/10 | `src/schema/` |
+| Bounded reader, quantization, generated codecs | `src/wire/` |
+| Generational entities, chunks, tables, CoW pages, journal | `src/world/` |
+| Tick-keyed RNG, canonical hash, `--verify-determinism` | `src/sim/`, `src/world/hash.zig` |
+
+Read that as "the kernel M1 needs is being built early because it can be verified without hardware", not as M0 progress.
 
 The matrix exists: `.github/workflows/ci.yml` carries one row per target family, **including rows that do not yet pass.** Dark rows are expected-failing with a named blocker rather than absent, so lighting one is a build-graph change and not a CI restructure. Do not delete a dark row to make the matrix green — that is a scope change. Current row status and the reachability constraints on physical-device criteria are in `docs/CI_TIERS.md` §4–§6.
 

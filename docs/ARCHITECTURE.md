@@ -301,6 +301,18 @@ bulk_content              streaming assets, patches
 
 **Ship the fallback from day one.** UDP/443 is filtered on corporate and hotel networks. A WebTransport-only build works on home wifi and goes silent the moment someone opens a laptop in a coworking space.
 
+**Session resumption is a transport-layer requirement, not an error path.** QUIC connection migration keeps a native session alive across a network change. **The browser does not expose it** — WebTransport has no migration hook, and Chrome does not enable QUIC connection migration by default — so a web client can neither depend on migration nor detect whether it occurred. Assuming otherwise makes `BENCHMARK_CONTRACT.md` §5's `handoff` profile unpassable on Web by construction, and drops all 32 clients of a relay-mediated web host on every network change.
+
+Therefore the session layer carries its own identity above the transport:
+
+- A session ID and resumption token, independent of the transport connection, issued at establishment.
+- Resumption re-attaches to the existing per-client baseline and interest set (§5.1) rather than starting a fresh one. The acked-baseline state survives the reconnect; that is the whole point.
+- A resumption window during which the authoritative cell holds the slot, its baseline, and its lease state. Beyond the window, the client rejoins as new.
+- **Budget: resume within 500 ms with no full state resynchronization**, which the interpolation buffer absorbs.
+- Native targets keep QUIC migration and use resumption only when migration fails. The mechanism is one path, exercised on every target rather than only on the one that needs it — a resumption path used solely by Web is a resumption path that is broken on Web.
+
+This is why §9.5's relay allocation and the control plane's session record (§12) hold session identity rather than the transport doing so.
+
 ### 9.3 Topology profiles
 
 Each profile shares schema, channels, framing, encryption identity, and replay machinery, and differs in trust, authority, and migration. **Topology profiles do not inherit the §1 floor.**
@@ -358,6 +370,20 @@ Narrow determinism claim: Wasm's IEEE-754 mandate is a spec-compliance requireme
 **Script is inside the replay boundary, outside the rollback boundary.** Script emits commands into the authoritative input/event log. Rollback **replays recorded commands and never re-invokes JS.** Script policy runs exactly once per logical tick.
 
 The consequence: script determinism is not a correctness requirement. Shadowing `Math` with engine natives, routing `Date.now` to sim clock and `Math.random` to seeded PRNG, and keeping logic out of finalizers remain requirements — for reproducible authoring and replay fidelity, not rollback correctness.
+
+**The second consequence, which decides what may be written in script at all: script cannot drive prediction.** If rollback replays recorded commands without re-invoking JS, then a correction that would have caused script to emit a *different* command replays the original anyway. Script output is authoritative-only, which means anything authored in script displays at full RTT and cannot be predicted.
+
+The boundary is therefore drawn on component class rather than left to taste:
+
+| Script may | Script may not |
+|---|---|
+| Read any class its manifest exposure permits | Write `predicted` components |
+| Write `authoritative`, `ephemeral-authoritative`, `authoring` | Participate in the rollback projection |
+| Emit commands and events into the input/event log | Be on the critical path of a prediction-visible action |
+
+**Prediction-critical gameplay is native systems, not script.** For the reference workload that means weapon fire, movement, and hit registration are native; loadout rules, objective and extraction logic, scoring, spawn policy, and mission flow are script. `SCHEMA_AND_EVOLUTION.md` §3's script-exposure field is where this is enforced per component, and §10's check 10 — a component declared with a class its usage contradicts — is what fails the build when it is violated.
+
+Getting this wrong is expensive in a specific way: it is invisible until someone plays at 140 ms, at which point the fix is rewriting gameplay from JS into Zig.
 
 ### 10.2 Sandbox tiers
 
@@ -527,7 +553,7 @@ At the §1 floor, a sustained CPU consumer competing with networking and renderi
 - Own mixer and DSP graph, HRTF spatialization, convolution reverb, sample-accurate scheduling.
 - Lock-free command queue from game thread to audio thread. Neither blocks on the other.
 - Output: WASAPI · CoreAudio · AAudio/Oboe · PipeWire/ALSA · AudioWorklet (128-sample quantum, DSP compiled to Wasm).
-- **Voice at 64 is a distinct budget line.** 64 concurrent transmitting, 24 client-side spatialized, remainder server-mixed positional fold. Full numbers in `BENCHMARK_CONTRACT.md` §8.
+- **Voice at 64 is a distinct budget line.** 64 concurrent transmitting, **6** client-side spatialized, remainder server-mixed positional fold. Full numbers in `BENCHMARK_CONTRACT.md` §8 — 24 spatialized streams was 4.5× over the stated downstream cap and did not survive arithmetic. Server-side fold CPU is now budgeted too; 64 clients each needing a distinct positional mix is real load on the cell.
 - Mobile audio CPU counts against the same ADPF headroom feeding the render-quality governor. **The governors must be aware of each other** or a render reduction gets immediately consumed by a voice increase and accomplishes nothing.
 
 ---
@@ -611,4 +637,7 @@ Elixir control plane · fleet orchestration · matchmaking, editor session broke
 2. **Physics island decomposition.** Whether constraint islands can be split for partial rollback, or must be re-simulated whole. Determines whether step 2 is useful or vestigial.
 3. **Offline authoring merge.** §13.6 defaults to rebase-with-surfaced-conflict. Revisit with usage data.
 4. **Relay economics.** Whether relays are operator-run only, or a third-party/community tier exists. §9.5 assumes untrusted either way, so this is a product question, not an architecture one.
-5. **Trademark clearance.** "Bedlam" is clear in IC 009 and the software-relevant parts of IC 042 in the US. EU/UK search and common-law investigation outstanding before public use.
+5. **Host island budget.** Whether an authoritative host needs an island budget distinct from the client rollback budget, and whether authoritative simulation may degrade island *fidelity* under thermal pressure while holding *cadence*. `SCOPED_ROLLBACK.md` §7. `BENCHMARK_CONTRACT.md` §2.3 currently takes the conservative reading — cadence is gated, fidelity degradation is not permitted — because that is falsifiable and the permissive reading is not until it is measured.
+6. **Trademark clearance.** "Bedlam" is clear in IC 009 and the software-relevant parts of IC 042 in the US. EU/UK search and common-law investigation outstanding before public use.
+
+Items resolved out of this list and out of `SPEC_DEFECTS.md` are recorded in that document with their reasoning, so a decision can be reversed by reading why it was made rather than by re-deriving it.

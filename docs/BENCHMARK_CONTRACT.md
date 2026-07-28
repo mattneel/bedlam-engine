@@ -54,6 +54,10 @@ Fixed. Verified by content hash.
 
 Fragments being `derived` is load-bearing: replicating 16,384 fragments is impossible at the floor, and the design answer is replicating the destruction *event* plus structural state and letting clients derive. If a build replicates fragments to pass a frame-time target, it fails on bandwidth.
 
+**Fragments do not collide with gameplay.** They collide with static world geometry and settle; they do not block projectiles, do not provide cover, and do not push characters or vehicles. This is forced rather than chosen: a `derived` component is not replicated, so each client derives its own fragment positions, and any gameplay consequence would mean clients disagreeing about cover — an authority violation, not a fidelity difference. `ARCHITECTURE.md` §5.2's "anything that can't [obey the rules] is cosmetic-only" is the governing rule and fragments are on the cosmetic side of it.
+
+The consequence is that fragments are a *presentation* budget, not a simulation one, and they are budgeted as such in §1.2.
+
 ### 1.2 Content complexity
 
 | Parameter | Value |
@@ -67,6 +71,19 @@ Fragments being `derived` is load-bearing: replicating 16,384 fragments is impos
 | Gameplay events per tick | 128 sustained, 512 peak |
 | Scene: static geometry | Fixed cooked bundle, per-platform variant |
 | Occlusion | Full — no "everything visible" simplification permitted |
+
+### 1.3 Client-side physics budget
+
+Previously unstated, and it inverted the intended cost distribution. §1.2's rigid-body counts are *server* figures; §1.1 additionally gives every client 4,096 sustained / 16,384 peak `derived` destruction fragments to simulate locally. Taken literally that puts more bodies on a thermally-throttled phone than on the 8-core reference server — spending the mobile thermal envelope, which `ARCHITECTURE.md` §1.3 and §17 both name as the binding constraint, in order to save the bandwidth constraint.
+
+The fragments are still `derived` and still not replicated. What changes is that their cost is now bounded per target class rather than assumed free:
+
+| Target class | Concurrent fragments simulated | Fragment sim budget |
+|---|---|---|
+| Desktop | 4,096 sustained, 16,384 peak | ≤ 1.5 ms/frame |
+| Mobile, Web | **1,024 sustained, 4,096 peak** | ≤ 2.0 ms/frame |
+
+Fragments beyond the per-class cap are culled by distance and settle-age, never simulated and then hidden. Because fragments do not affect gameplay (§1.1), a lower cap is a visual difference between clients and not a divergence — which is exactly why the cap is allowed to differ per class while nothing else in the census does.
 
 ---
 
@@ -100,12 +117,49 @@ A conforming run requires **at least one live client of each of the six targets*
 |---|---|---|---|---|---|
 | Windows / Linux / macOS | 120 | ≤ 8.3 ms | ≤ 11.0 ms | ≤ 6 GB | 64 |
 | Android (reference tier) | 60 | ≤ 16.6 ms | ≤ 22.0 ms | ≤ 2.5 GB | 64 |
-| iOS (reference tier) | 60 | ≤ 16.6 ms | ≤ 22.0 ms | ≤ 2.5 GB | 64 |
+| iOS (reference tier) | 60 | ≤ 16.6 ms | ≤ 22.0 ms | ≤ 1.8 GB | 64 |
 | Web (conformant profile) | 60 | ≤ 16.6 ms | ≤ 25.0 ms | ≤ 1.8 GB | 64 |
 
 **Prediction frequency is 64 Hz on every target including Web and mobile.** This is the requirement that does not currently exist anywhere. The render-rate and presentation-rate governors may vary output; the predicted simulation cadence may not.
 
 Web resident memory is stated against the wasm32 linear-memory budget, not browser process RSS.
+
+**iOS resident memory is 1.8 GB, not 2.5 GB.** Jetsam's hard per-process limit on the 4 GB A14 devices named in `CONFORMANCE_PROFILES.md` §2 is approximately 2,098 MB — a budget above it is not tight, it is unreachable, because the OS terminates the process. 1.8 GB leaves headroom below the threshold and happens to equal the Web budget, which makes the two tightest targets share one number.
+
+### What "64 Hz, invariant" means
+
+Cadence is a separate statistic from tick duration, and the percentiles in §11 do not constrain it. A client that stalls 200 ms and then executes 13 catch-up ticks has held 64 Hz *mean* cadence while violating the intent entirely. Therefore:
+
+| Quantity | Requirement |
+|---|---|
+| Inter-tick interval, P99.9 | ≤ 20 ms |
+| Inter-tick interval, worst case | ≤ 31.25 ms (two tick periods) |
+| Consecutive catch-up ticks in one frame | ≤ 2 |
+| Frames containing any catch-up tick | ≤ 0.5% of a run |
+
+A run violating any of these fails, regardless of mean rate.
+
+### 2.3 Host gate
+
+**The boldest claim in the project previously had no gate.** `README.md` and `ARCHITECTURE.md` §1.1 both identify a phone or browser tab hosting 32 players as the thing "not done anywhere," §18.1 makes host floors non-negotiable, and §19 puts them in M1's exit criterion — yet §12's pass/fail never mentioned hosting, §10 gave player counts with no budgets, and §0/§11 content-address 64 input streams with no 32-stream fixture. By this document's own opening sentence, a scale requirement stated as a number and gated by nothing is decorative.
+
+A conforming host run uses a **separate content-addressed 32-stream input fixture**, hash-verified per §11, on the reference device for its class.
+
+| Host class | Players | Tick P50 | Tick P95 | Tick P99 | Overrun | Resident | Uplink |
+|---|---|---|---|---|---|---|---|
+| Desktop (consumer) | 64 | ≤ 7.0 ms | ≤ 12.0 ms | ≤ 15.0 ms | 0 | ≤ 6 GB | ≤ 12 Mbps |
+| Android / iOS (reference tier) | 32 | ≤ 9.0 ms | ≤ 13.0 ms | ≤ 15.0 ms | 0 | ≤ 1.8 GB | ≤ 6 Mbps |
+| Web (relay-mediated) | 32 | ≤ 9.0 ms | ≤ 13.0 ms | ≤ 15.0 ms | 0 | ≤ 1.8 GB | ≤ 6 Mbps |
+
+Additional requirements:
+
+- **Cadence invariance (§2.2) applies to the host**, and the host is the source of every snapshot its clients roll back to. A host cadence violation degrades every participant's prediction simultaneously.
+- **The mobile host runs the full §7 thermal soak** with authoritative simulation included, measured on the final 10 minutes.
+- **A host is also a client.** It meets §2.2's frame budget for its own class concurrently with the tick budget above. Hosting is additive load, not a mode swap.
+- **Host migration (`ARCHITECTURE.md` §14.3) is exercised**: at least one forced migration per run, completing with no state loss and no client disconnect.
+- Relay hop latency is counted in the §5 RTT profiles for the web host.
+
+**`SCOPED_ROLLBACK.md` §7's open question is in scope here.** A mobile host at minute 40 forming a 512-body constraint island is the worst case in the corpus, and whether authoritative simulation may degrade island *fidelity* while holding *cadence* is unresolved. The gate as written requires cadence and permits nothing about fidelity, which is deliberately the conservative reading until measurement says otherwise.
 
 ---
 
@@ -141,27 +195,61 @@ Exceeding the hard ceiling at any point fails the run. Exceeding sustained for m
 
 This is the binding constraint. A build that meets every frame-time target and exceeds downstream sustained has not passed.
 
+### 4.1 What the budget actually buys
+
+Stated so it constrains the codec from the start rather than being rediscovered during M1:
+
+```
+384 kbps sustained ÷ 8            =  48,000 bytes/sec
+48,000 ÷ 32 Hz snapshot rate      =   1,500 bytes per snapshot per client
+1,500 ÷ 512 relevant entities     =     2.9 bytes per entity, if all update
+```
+
+A quantized transform delta is realistically 6–10 bytes with good bit-packing, so a snapshot affords roughly **180 entity updates** — about 35% of the relevant set, an effective per-entity refresh near 11 Hz against a 64 Hz simulation. §4's aggregate figure is consistent: 24 Mbps ÷ 64 = 375 kbps.
+
+The budget closes, but only if relevance ordering *is* the netcode rather than a layer on top of it, and the interpolation-delay governor absorbs considerably more staleness for the long tail than `ARCHITECTURE.md` §1.3 implies. Priority accumulators decide which ~180 of 512 entities are worth bytes this snapshot; that decision is the design.
+
+### 4.2 Minimum measured relevant set
+
+§1.1 lists the per-client relevant set inside a table headed "Fixed. Verified by content hash." It is not a hashed input — it is a runtime output of interest filtering, and nothing gated it.
+
+That made it the cheapest way to pass this document. Tightening interest filters reduces bandwidth (§4), reduces client frame time (§2.2), leaves every content hash unchanged, and degrades the game in a way no criterion observed. `CONFORMANCE_PROFILES.md` §4 already sanctions the mechanism as a degradation lever, so nothing prevented it being used as an optimization strategy.
+
+| Requirement | Value |
+|---|---|
+| Measured relevant set, conformant client, P50 | ≥ 512 entities |
+| Measured relevant set, conformant client, P05 | ≥ 384 entities |
+| Reported per run | Full distribution, per target |
+
+A run whose measured relevant set falls below these fails, whatever its bandwidth and frame numbers say.
+
 ---
 
 ## 5. Network condition profiles
 
 Every profile runs the full 45-minute soak. Passing requires **all** profiles.
 
-| Profile | RTT | Jitter | Loss | Reorder | Notes |
-|---|---|---|---|---|---|
-| `clean` | 20 ms | 2 ms | 0.1% | 0% | Baseline |
-| `regional` | 60 ms | 8 ms | 0.5% | 0.2% | Typical matchmade |
-| `distant` | 140 ms | 20 ms | 1.5% | 1.0% | Cross-region |
-| `mobile-lte` | 90 ms | 45 ms | 2.5% | 1.5% | Bursty; jitter is the stressor |
-| `mobile-degraded` | 180 ms | 80 ms | 6.0% | 3.0% | Congested cell |
-| `handoff` | Varies | Varies | Varies | Varies | Forced cell↔wifi migration every 90 s |
+| Profile | RTT | Jitter | Loss | Reorder | Link capacity | Notes |
+|---|---|---|---|---|---|---|
+| `clean` | 20 ms | 2 ms | 0.1% | 0% | 100 Mbps | Baseline |
+| `regional` | 60 ms | 8 ms | 0.5% | 0.2% | 25 Mbps | Typical matchmade |
+| `distant` | 140 ms | 20 ms | 1.5% | 1.0% | 25 Mbps | Cross-region |
+| `mobile-lte` | 90 ms | 45 ms | 2.5% | 1.5% | **3 Mbps** | Bursty; jitter is the stressor |
+| `mobile-degraded` | 180 ms | 80 ms | 6.0% | 3.0% | **1.2 Mbps** | Congested cell |
+| `handoff` | Varies | Varies | Varies | Varies | Varies | Forced cell↔wifi migration every 90 s |
 
-The `handoff` profile exercises QUIC connection migration. A run in which handoff produces a visible session interruption fails.
+**Link capacity is a shaped constraint, not a measurement.** §4 declares bandwidth the binding constraint and then, previously, only ever measured what the engine emitted and compared it to a number — no profile constrained what the link could carry. A congested-cell profile that caps latency and loss but not throughput is not a congested cell. The capacities above are imposed on the path; a run that exceeds them observes real queueing, real loss, and real congestion response.
+
+**Radio requirement.** The mobile soak runs on the cellular modem for `mobile-lte` and `mobile-degraded`, not on Wi-Fi behind a shaper. The modem is a substantial thermal contributor and is the reason the phone claim is interesting; §7 previously pinned ambient temperature, idle time, and battery but said nothing about radio. Wi-Fi with a shaper remains valid for `clean`, `regional`, and `distant`.
+
+The `handoff` profile exercises connection continuity across a network change. A run in which handoff produces a visible session interruption fails.
+
+**Handoff on Web is a reconnect, not a migration.** WebTransport exposes no connection-migration hook and Chrome does not enable QUIC connection migration by default, so a web client cannot rely on the session surviving a network change and cannot detect whether it did. The web target therefore satisfies this profile via session resumption (`ARCHITECTURE.md` §9.2): resume within **≤ 500 ms**, with no state loss, no full resynchronization, and no visible interruption beyond the interpolation buffer. A web *host* additionally resumes without dropping its 32 clients. Native targets continue to satisfy it via QUIC migration proper.
 
 **Correctness criteria under all profiles:**
 
 - Rollback ladder step 4 (authoritative correction without local re-simulation) occurs in ≤ 0.5% of predicted ticks under `regional`, ≤ 2% under `mobile-degraded`.
-- Causal closure size P99 stays within step-2 budget under `regional`.
+- **Causal closure size P99 ≤ 256 entities under `regional`, ≤ 512 under `mobile-degraded`.** Stated as an absolute ceiling rather than "within step-2 budget": `SCOPED_ROLLBACK.md` §3 marks budget derivation OPEN and leans adaptive, and a criterion phrased against an adaptive budget is satisfied by the budget moving rather than by the closure being small. It would have measured nothing. These figures are provisional and are the first thing `SCOPED_ROLLBACK.md` §8 step 1 should replace with measured data — but a provisional absolute number is falsifiable and a self-referential one is not.
 - No desynchronization requiring full state resynchronization in a 45-minute run under any profile except `mobile-degraded`, where ≤ 1 is permitted.
 
 ---
@@ -194,6 +282,8 @@ Exact SKUs are pinned in the CI matrix definition and revised annually. **Revisi
 | Start condition | Device at ambient, ≥ 20 min idle since prior run |
 | Ambient | 22 °C ± 2 °C, documented |
 | Battery | ≥ 80% at start, not charging |
+| **Radio** | **Cellular modem active for `mobile-lte` and `mobile-degraded`; Wi-Fi may not substitute** |
+| **Screen** | **Display on at ≥ 50% brightness for the full run** |
 
 **Pass criteria:**
 
@@ -213,12 +303,27 @@ Separate from §4 bandwidth and §2 frame budgets.
 | Parameter | Value |
 |---|---|
 | Concurrent transmitting | 64 (all players) |
-| Client-side spatialized decode | 24 nearest |
+| Client-side spatialized decode | **6 nearest** |
 | Server-mixed positional fold | Remainder, 2 channels |
-| Codec | Opus, 24 kbps mono per stream |
+| Codec | Opus, **16 kbps** mono per discrete stream |
+| Fold bitrate | 24 kbps, 2 channels |
 | Voice downstream per client | ≤ 128 kbps |
 | Voice upstream per client | ≤ 32 kbps |
 | Client voice CPU | ≤ 8% of one core (mobile), ≤ 3% (desktop) |
+| **Server voice CPU** | **≤ 1.5 ms per tick per cell, outside the §2.1 budget** |
+
+**The arithmetic must close, and previously did not.** 24 discrete streams at 24 kbps is 576 kbps against a 128 kbps cap — 4.5× over, with no transcoding mechanism stated anywhere. Delivering 24 discrete spatialized streams is not achievable inside this cap at any usable Opus bitrate, and §4 names bandwidth as the binding constraint, so the count gives way rather than the cap:
+
+```
+6 discrete × 16 kbps  =  96 kbps
+positional fold, 2 ch =  24 kbps
+                        ---------
+                        120 kbps  ≤ 128 kbps  ✓
+```
+
+Six spatialized speakers is what proximity chat in a 64-player extraction shooter actually needs; the remainder folds. Opus at 16 kbps mono is solid for speech.
+
+**Server voice CPU is now budgeted.** It previously appeared nowhere: 64 clients each requiring a distinct positional fold is 64 mixes per cell per tick, which is real DSP load on the 8-core reference host. It is stated outside the §2.1 tick budget because it runs off the tick thread, but it competes for the same cores and a run that meets §2.1 by starving the mixer has not passed.
 
 Voice CPU counts against the same thermal envelope as sim, render, and networking (§17 of the spec). A run passing frame budgets with voice disabled has not passed.
 
@@ -247,6 +352,8 @@ Voice CPU counts against the same thermal envelope as sim, render, and networkin
 | Desktop | 64 | Direct QUIC listen | Full §2.1 budgets on consumer hardware, relaxed to 12 ms P95 |
 | Android / iOS | 32 | Direct QUIC listen | Thermal-bounded; 45-min soak applies |
 | Web | 32 | **Relay-mediated** | Browsers cannot accept inbound connections |
+
+**Budgets and pass criteria for these floors are §2.3**, which also defines the 32-stream fixture they are measured against. This table gives the topology; §2.3 gives the gate. Until §2.3 was added these floors were stated here and gated nowhere, which made the project's most novel claim its least falsifiable one.
 
 **The web host is a transport lowering, not an exception.** A browser cannot listen, so a browser-hosted cell connects outbound to a relay and clients connect to the relay. The relay forwards datagrams and performs no simulation, no validation, and no state inspection — and cannot, because payloads are end-to-end encrypted with keys it does not hold (`ARCHITECTURE.md` §9.5). Same wire protocol, one additional hop, counted in the §5 RTT profiles.
 
@@ -279,18 +386,25 @@ A build **passes the §1 floor** when, on the same commit:
 
 1. Server gate met (§2.1) on the reference server class.
 2. Client gate met (§2.2) on all six conformant targets, with live clients of each in-session.
-3. Bandwidth contract met (§4), voice enabled (§8).
-4. All six network profiles passed (§5), including `handoff`.
-5. Thermal soak passed on both mobile targets, measured on the final 10 minutes (§7).
-6. Correctness criteria met (§5), including ladder step-4 rate and closure P99.
-7. Fixture hashes verified (§11).
+3. **Cadence invariance met (§2.2)** — inter-tick interval and catch-up bounds, not mean rate.
+4. **Host gate met (§2.3)** on desktop, both mobile targets, and the relay-mediated web host, against the 32-stream fixture, including one forced host migration.
+5. Bandwidth contract met (§4), voice enabled (§8).
+6. **Minimum measured relevant set met (§4.2).**
+7. All six network profiles passed (§5) under shaped link capacity, including `handoff`.
+8. Thermal soak passed on both mobile targets, on the cellular modem, measured on the final 10 minutes (§7).
+9. Correctness criteria met (§5), including ladder step-4 rate and the absolute closure ceiling.
+10. Fixture hashes verified (§11), for both the 64-stream and 32-stream fixtures.
 
 Anything less is a partial result and must be reported as such. **"Passes on desktop" is not a result. It is the absence of one.**
+
+Items 3, 4 and 6 were added after a full read of this contract found that cadence invariance, the host floors, and the relevant set were each asserted somewhere in the corpus and gated nowhere. Each was passable by a build that violated the intent completely.
 
 ---
 
 ## 13. Revision policy
 
-This document is versioned with the spec. Changes to §1.1 entity census, §1.2 content complexity, §6 reference devices, or §7 soak duration require explicit review — these are the four levers that make the number 64 mean less than it says.
+This document is versioned with the spec. Changes to §1.1 entity census, §1.2 content complexity, §6 reference devices, §7 soak duration, or **the recorded input streams** require explicit review — these are the levers that make the number 64 mean less than it says.
+
+**The input log is the fifth lever and was previously ungoverned.** §0 rests this contract's entire anti-gaming argument on "a fixed, versioned, content-addressed scene plus a deterministic replay of 64 recorded input streams," concluding that tuning the engine is the only remaining lever. But re-recording 45 minutes of gentler input produces a new and perfectly valid content-addressed hash, invalidates only cross-build comparability — which nothing gated — and fails no criterion. Since the recordings determine firefight density, projectile count, destruction volume, contact count, and closure size, re-recording was strictly cheaper than any engine optimization. Both the 64-stream and 32-stream fixtures are now under this policy.
 
 Loosening any of them is a change to the product's ambition, not a benchmark adjustment, and must be recorded as such.

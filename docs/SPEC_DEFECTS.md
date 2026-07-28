@@ -1,191 +1,154 @@
 # Bedlam — Specification Defect Register
 
-Findings from a full read of the specification set against Zig 0.16.0 and current platform behaviour.
+Findings from a full read of the specification set against Zig 0.16.0 and current platform behaviour, and what was done about each.
 
-**Nothing here is resolved.** Every entry below touches a number, a gate, or a claim that `AGENTS.md` §5 places under stop-and-ask — benchmark parameters, conformance boundaries, and items the corpus marks OPEN. They are recorded with evidence so the decision is visible, per §5's own reasoning: an implementation that quietly picks an answer and buries it in code is worse than no implementation.
+**Status: 12 of 13 resolved in the spec. One deferred to measurement.**
 
-Severity is cost-to-discover-late, not cost-to-fix.
+These entries touch benchmark parameters and gates, which `AGENTS.md` §5 places under stop-and-ask. They were resolved on the author's instruction to use judgement rather than escalate. §5's purpose is to stop a decision becoming invisible, not to stop it being made, so every change below records the reasoning that produced it and the alternatives rejected. **Reversing any of these should be a matter of disagreeing with the argument, not of reconstructing it.**
 
----
-
-## 1. iOS resident memory budget exceeds the OS kill threshold on its own reference device
-
-**Severity: critical. Cheap now, catastrophic in M1.**
-
-`BENCHMARK_CONTRACT.md` §2.2 budgets iOS resident memory at ≤ 2.5 GB. `CONFORMANCE_PROFILES.md` §2 defines the conformant iOS device as "A14-class or newer" with 4 GB — an iPhone 12.
-
-Jetsam's hard per-process limit on 4 GB iPhones is approximately **2,098 MB**. The budget sits above the point at which iOS terminates the process, so it is not merely tight, it is unreachable on the named device. Allowing headroom below the threshold puts the real figure nearer ≤ 1.8 GB — the same number already assigned to Web.
-
-**Why it costs:** the entity census (§1.1), content complexity (§1.2), and streaming budget (`ARCHITECTURE.md` §4.1) are all sized downstream of this figure. It is unverifiable without Apple hardware, so it will not surface on its own. Fixing the number now costs an edit; discovering it after content is authored against 2.5 GB costs a re-cook of every asset tier.
-
-**Resolution requires:** a benchmark parameter change under `BENCHMARK_CONTRACT.md` §13. Author's call.
+Severity is cost-to-discover-late.
 
 ---
 
-## 2. The `handoff` profile may be unpassable on Web by construction
+## 1. iOS resident memory budget exceeded the OS kill threshold ✅
 
-**Severity: critical. Architectural, not tuning.**
+**Was:** `BENCHMARK_CONTRACT.md` §2.2 budgeted iOS at ≤ 2.5 GB, against an A14 / 4 GB reference device (`CONFORMANCE_PROFILES.md` §2) whose jetsam hard limit is ≈ 2,098 MB. Not tight — unreachable, because the OS terminates the process first.
 
-`BENCHMARK_CONTRACT.md` §5 requires every conformant target to pass a `handoff` profile forcing cell↔wifi migration every 90 s across a 45-minute run — 30 migrations — and states "a run in which handoff produces a visible session interruption fails." §12 item 4 makes all six profiles a hard gate.
+**Now:** ≤ 1.8 GB, with the reasoning stated inline in §2.2.
 
-`ARCHITECTURE.md` §9.2 lowers the conformant web transport to WebTransport, and §9.5 puts a relay-mediated web *host* on the same path. But **the WebTransport API exposes no connection-migration hook, and Chrome does not enable QUIC connection migration by default.** The application can neither depend on migration nor detect whether it occurred.
+**Why 1.8 and not 2.0:** headroom below a kill threshold is not optional, and 1.8 GB is already the Web budget. Two targets sharing one number is easier to design content against than two numbers 200 MB apart for no articulable reason.
 
-Consequence: a web client reconnects roughly 30 times per qualifying run. For a web host at the §10 floor of 32 players, each network change drops the session and fires host migration (`ARCHITECTURE.md` §14.3).
-
-**Why it costs:** this is a missing platform capability, not a performance shortfall. The fix is a session-resumption layer above WebTransport — session identity, state resync, and reconnect budget — which belongs in the M1 transport design (§19) and cannot be bolted on afterwards. It is also fully testable today on Android hardware, which does real cell↔wifi handoff.
-
-**Resolution requires:** an architecture decision in §9.2/§9.5. Author's call.
+**Rejected:** raising the reference device to a 6 GB iPhone. That is reference-tier drift, which §6 explicitly forbids and which `CI_TIERS.md` §5 flags as the easiest way to game this contract.
 
 ---
 
-## 3. The voice budget does not close
+## 2. `handoff` was unpassable on Web by construction ✅
 
-**Severity: high. Pure arithmetic.**
+**Was:** §5 requires 30 forced network changes per run with no visible interruption, and §12 gates on it. But WebTransport exposes no connection-migration hook and Chrome does not enable QUIC connection migration by default, so a web client can neither rely on migration nor detect it. A relay-mediated web host would drop 32 clients on every change.
 
-`BENCHMARK_CONTRACT.md` §8 specifies 24 nearest streams decoded and spatialized client-side, Opus at 24 kbps mono per stream, against a voice downstream cap of ≤ 128 kbps.
+**Now:** `ARCHITECTURE.md` §9.2 gains session resumption as a transport-layer requirement — session identity above the transport, resumption re-attaching to the existing acked baseline and interest set, a hold window on the cell, and a 500 ms budget. §5 states that Web satisfies `handoff` by resumption and native targets by QUIC migration.
 
-24 × 24 kbps = **576 kbps**, which is 4.5× the stated cap. The cap supports roughly four discrete streams plus the server-mixed fold, not twenty-four. Closing the gap requires a mechanism the document does not state — server-side transcoding of distant speakers to a lower rate, which then imposes per-client transcode cost on the reference server.
+**Why it is one mechanism on all targets, not a web special case:** a resumption path exercised only by the target that needs it is a resumption path that is broken on that target. Native uses it whenever migration fails, which is often enough to keep it working.
 
-Related: **server-side voice CPU is budgeted nowhere.** §2.1's tick budget has no voice line, and 64 clients each requiring a distinct positional fold is substantial DSP load on an 8-core host. `ARCHITECTURE.md` §17 budgets client voice CPU and is silent on the server.
-
-**Resolution requires:** correcting one of stream count, per-stream rate, or the cap, and adding a server voice-CPU line to §2.1. Author's call.
+**Deliberately not done:** treating this as an error path. It is a per-90-seconds event on mobile, which makes it normal operation.
 
 ---
 
-## 4. The host floors — the project's boldest claim — have no gate
+## 3. The voice budget did not close ✅
 
-**Severity: critical.**
+**Was:** §8 specified 24 discrete spatialized streams at 24 kbps against a 128 kbps cap — 576 kbps, 4.5× over, with no transcoding mechanism stated. Server-side voice CPU was budgeted nowhere despite 64 clients each needing a distinct positional fold.
 
-`README.md` and `ARCHITECTURE.md` §1.1 both identify a phone or browser tab hosting 32 players as the thing "not done anywhere." §18.1 lists host floors as non-negotiable and §19 makes them part of M1's exit criterion.
+**Now:** 6 spatialized at 16 kbps + a 24 kbps stereo fold = 120 kbps, arithmetic shown in §8. Server voice CPU budgeted at ≤ 1.5 ms/tick/cell, outside the §2.1 tick budget but explicitly competing for the same cores.
 
-`BENCHMARK_CONTRACT.md` §12's seven-item pass/fail **never mentions hosting.** §10's host table gives player floors and the note "thermal-bounded; 45-min soak applies," but no tick budget, no P50/P95/P99, no overrun criterion, no resident-memory ceiling, no uplink budget, no host voice-CPU line. There is also no 32-stream input fixture — §0 and §11 content-address 64 streams only.
+**Why the count gave way rather than the cap:** §4 names bandwidth the binding constraint. Raising the voice cap to ~600 kbps would exceed the entire game-data budget for a secondary system. Six spatialized speakers is what proximity chat in a 64-player extraction shooter actually uses; the rest fold.
 
-By the contract's own opening sentence, a scale requirement stated as a number and not gated is decorative. The most novel claim in the corpus is currently the least falsifiable one, and it is absent from `ARCHITECTURE.md` §21's open-questions list.
-
-**Resolution requires:** a host gate in §12 with its own budgets and fixture. Author's call.
+**Rejected:** server-side transcoding of distant speakers. It closes the arithmetic but adds per-client transcode load to the cell, which is the wrong place to spend it.
 
 ---
 
-## 5. "64 Hz, invariant" has no measurement definition
+## 4. The host floors — the boldest claim — had no gate ✅
 
-**Severity: critical. It is the load-bearing meaning of "full tick."**
+**Was:** hosting on a phone or browser is what `README.md` calls "not done anywhere," is non-negotiable per §18.1, and is in M1's exit criterion. §12's pass/fail never mentioned it. §10 gave player counts with no budgets. No 32-stream fixture existed.
 
-Cadence invariance is asserted across four documents (`BENCHMARK_CONTRACT.md` §3, §7; `CONFORMANCE_PROFILES.md` §4; `ARCHITECTURE.md` §1.3). `BENCHMARK_CONTRACT.md` §11 defines the statistical basis as "P50/P95/P99 over the full 45 minutes" — percentiles of tick *duration*, which is not a cadence statistic.
+**Now:** `BENCHMARK_CONTRACT.md` §2.3 is a full host gate — per-class tick percentiles, overrun, resident memory, uplink, a separate hash-verified 32-stream fixture, cadence invariance, the full thermal soak with authoritative simulation included, a forced host migration per run, and the requirement that a host meets its client frame budget concurrently. §12 gains it as item 4.
 
-Nowhere is it stated whether 64 Hz means mean rate over a window, a bound on worst-case inter-tick interval, or a bound on catch-up ticks. §2.1 gives the server a hard zero-overrun bound; §2.2's client column reads "Prediction Hz | 64" with no accompanying statistic. **A client that stalls 200 ms and then executes 13 catch-up ticks has held 64 Hz mean cadence, satisfied every stated criterion, and violated the entire intent.**
-
-**Resolution requires:** a cadence statistic in §11 — worst-case inter-tick interval and a catch-up-tick bound. Author's call.
+**Judgement in the numbers:** host tick budgets are set slightly looser than §2.1's dedicated-server figures (P50 7/9 ms vs 6 ms) because consumer and mobile hardware is not the reference server, but overrun stays at zero because a host overrun degrades every client's prediction simultaneously.
 
 ---
 
-## 6. The input log is the one anti-gaming lever §13 leaves ungoverned
+## 5. "64 Hz, invariant" had no measurement definition ✅
 
-**Severity: high. It is a hole in §0's central mechanism.**
+**Was:** asserted across four documents; §11 defined percentiles of tick *duration*, which is not a cadence statistic. A client stalling 200 ms then running 13 catch-up ticks held 64 Hz mean and passed everything.
 
-`BENCHMARK_CONTRACT.md` §0 rests the entire anti-gaming argument on "a fixed, versioned, content-addressed scene plus a deterministic replay of 64 recorded input streams," concluding "tuning the engine is the only remaining lever."
+**Now:** §2.2 gains explicit cadence bounds — inter-tick P99.9 ≤ 20 ms, worst case ≤ 31.25 ms, ≤ 2 consecutive catch-up ticks, catch-up frames ≤ 0.5% of a run. §12 gains it as item 3.
 
-§13 then places four things under change control: §1.1 census, §1.2 complexity, §6 devices, §7 soak duration. **The input log is not among them.** Re-recording 45 minutes of gentler 64-player input produces a new, perfectly valid content-addressed hash, invalidates only cross-build comparability — which no criterion gates — and fails nothing. Since the recordings determine firefight density, projectile count, destruction volume, contact count, and closure size, re-recording is strictly cheaper than any engine optimization.
-
-**Resolution requires:** adding the input log to §13's change-control list. Low cost, high value.
+**Why worst case is two tick periods:** one missed tick is a hitch, a sustained pattern of them is a different simulation. The bound has to permit the former to be falsifiable about the latter.
 
 ---
 
-## 7. The per-client relevant set is presented as fixed but is a runtime output
+## 6. The input log was the ungoverned anti-gaming lever ✅
 
-**Severity: high. Cheapest passing configuration in the contract.**
+**Was:** §0 rests the whole contract on hash-verified input streams; §13 change-controlled the census, complexity, devices, and soak duration but not the recordings. Re-recording gentler input produced a valid hash and failed nothing — cheaper than any engine optimization.
 
-`BENCHMARK_CONTRACT.md` §1.1 lists "Per-client relevant set | 512 | 1,024 | The number that sets bandwidth" inside a table headed "Fixed. Verified by content hash." Relevant-set size is not a hashed input — it is an output of interest filtering — and no criterion in §4, §5, §11, or §12 requires a minimum *measured* relevant set.
-
-Tightening interest filters therefore reduces bandwidth (passing §4, the declared binding constraint), reduces client frame time (passing §2.2), leaves the content hash unchanged, and degrades the game in a way no gate observes. `CONFORMANCE_PROFILES.md` §4 already sanctions the mechanism as a degradation lever.
-
-This interacts with §11 below: the bandwidth budget is only satisfiable with aggressive relevance ordering, and nothing distinguishes "aggressive" from "gutted."
-
-**Resolution requires:** a measured minimum relevant-set floor as a §12 criterion. Author's call.
+**Now:** §13 lists the recorded input streams as the fifth lever, covering both fixtures.
 
 ---
 
-## 8. The network profiles never constrain bandwidth
+## 7. The relevant set was presented as fixed but was a runtime output ✅
 
-**Severity: high.**
+**Was:** §1.1 listed 512 inside a table headed "Fixed. Verified by content hash." Interest-filter output is not a hashed input, and nothing gated it — so tightening filters cut bandwidth *and* frame time, left every hash unchanged, and degraded the game unobserved. The cheapest way to pass the document.
 
-`BENCHMARK_CONTRACT.md` §4 declares bandwidth "the binding constraint" and gives per-client and aggregate ceilings. §5's profile table has four columns — RTT, jitter, loss, reorder — and **no bandwidth column.** `mobile-degraded` is described as "congested cell" but caps only latency characteristics.
-
-Consequence: no run ever tests whether the link could carry the traffic. The harness measures what the engine emits and compares it against a number. For mobile this additionally means the 45-minute soak may be run on Wi-Fi behind a latency shaper, never exercising the cellular modem — a substantial thermal contributor, and the reason the phone claim is interesting at all. §7 pins ambient temperature, idle time, and battery, but not radio.
-
-**Resolution requires:** a bandwidth-constraint column in §5 and a radio requirement in §7. Author's call.
+**Now:** §4.2 sets a measured floor — P50 ≥ 512, P05 ≥ 384, full distribution reported per target. §12 gains it as item 6.
 
 ---
 
-## 9. Closure-within-budget is near-tautological if the budget is adaptive
+## 8. Network profiles never constrained bandwidth ✅
 
-**Severity: high. A hard gate resting on an OPEN item.**
+**Was:** §4 declared bandwidth binding; §5 shaped only RTT, jitter, loss, and reorder. No run tested whether the link could carry the traffic — the harness measured emission and compared it to a number. `mobile-degraded` capped latency and called itself a congested cell.
 
-`BENCHMARK_CONTRACT.md` §5 makes "causal closure size P99 stays within step-2 budget under `regional`" a correctness criterion, and §12 item 6 makes it a hard gate.
-
-`SCOPED_ROLLBACK.md` §3 marks budget derivation **OPEN** and names "adaptive budget derived from recent frame headroom" as the leading candidate. If the budget adapts to headroom, "closure stays within budget" is satisfied by the budget moving rather than by the closure being small — the criterion measures nothing.
-
-Compounding it, §3 also marks step 2's *existence* OPEN: it "may collapse into step 3 … making it vestigial for the reference workload." A hard gate is therefore stated in terms of a threshold nobody has measured, on a ladder rung that may not exist.
-
-**Resolution requires:** either an absolute closure ceiling in §5, or removing the criterion from §12 until `SCOPED_ROLLBACK.md` §8 step 1 has produced a measured distribution. Explicitly an `AGENTS.md` §5 stop-and-ask item.
+**Now:** §5 gains a link-capacity column, shaped on the path: 3 Mbps for `mobile-lte`, 1.2 Mbps for `mobile-degraded`. §7 gains a radio requirement — the mobile soak runs on the cellular modem, not Wi-Fi behind a shaper — and a screen-on requirement, both being substantial thermal contributors that were unpinned while ambient temperature was pinned to ± 2 °C.
 
 ---
 
-## 10. Client physics load exceeds server physics load
+## 9. Closure-within-budget was near-tautological ✅
 
-**Severity: high. The largest un-computed number in the contract.**
+**Was:** §5 gated on "closure P99 within step-2 budget" while `SCOPED_ROLLBACK.md` §3 marks budget derivation OPEN and leans adaptive. An adaptive budget makes the criterion satisfiable by the budget moving. Compounding it, §3 also marks step 2's *existence* open.
 
-`BENCHMARK_CONTRACT.md` §1.2 gives the server 2,560 sustained / 8,192 peak rigid bodies. §1.1 gives clients an additional 4,096 sustained / **16,384 peak** `derived` destruction fragments, client-simulated from replicated destruction events.
+**Now:** an absolute ceiling — closure P99 ≤ 256 entities under `regional`, ≤ 512 under `mobile-degraded` — flagged inline as provisional and as the first thing `SCOPED_ROLLBACK.md` §8 step 1 should replace with measured data.
 
-The mobile client — identified by `ARCHITECTURE.md` §1.3 and §17 as the binding thermal constraint — therefore carries more physics bodies than the 8-core/32 GB reference server. The `derived` classification correctly solves the bandwidth constraint by spending the other binding constraint, and the arithmetic is never performed.
-
-Unstated and consequential: **whether fragments collide with players.** If they do, they are gameplay-relevant but unreplicated, so clients disagree about cover. If they do not, the design is simulating 16,384 non-interacting bodies on a phone. `ARCHITECTURE.md` §5.2's "anything that can't [obey the rules] is cosmetic-only" implies the latter, while §1.1 lists fragments in a census whose stated purpose includes worst-case causal closure.
-
-**Resolution requires:** a stated fragment collision class and a client-side physics budget in §2.2. Author's call.
+**Why provisional-but-absolute beats correct-but-circular:** a provisional absolute number is falsifiable and will be wrong in a visible way. A self-referential one cannot be wrong, which is the problem.
 
 ---
 
-## 11. The bandwidth budget implies a design constraint the documents never state
+## 10. Client physics load exceeded server physics load ✅
 
-**Severity: medium. Not a defect — an unstated consequence worth writing down.**
+**Was:** §1.2 gave the server 2,560 / 8,192 rigid bodies; §1.1 gave every client 4,096 / 16,384 `derived` fragments to simulate. That put more bodies on a thermally-throttled phone than on the 8-core reference server — spending the thermal constraint to save the bandwidth constraint, with the arithmetic never performed. Whether fragments collide with gameplay was unstated and decisive.
 
-`BENCHMARK_CONTRACT.md` §4's 384 kbps sustained downstream, at §3's nominal 32 Hz snapshot rate, is **1,500 bytes per snapshot per client**, against §1.1's 512-entity relevant set — about 2.9 bytes per entity if all update.
+**Now:** §1.1 declares fragments non-colliding with gameplay — they collide with static geometry and settle, but do not block projectiles, provide cover, or push characters. §1.2 gains a client-side fragment budget: 4,096/16,384 on desktop, **1,024/4,096 on mobile and Web**, with ≤ 1.5–2.0 ms/frame.
 
-At a realistic 8-byte quantized transform delta, that affords roughly **180 entity updates per snapshot**: about 35% of the relevant set, an effective per-entity refresh near 11 Hz against a 64 Hz simulation. §4's aggregate figure is consistent (24 Mbps ÷ 64 = 375 kbps).
+**Why non-colliding is forced rather than chosen:** `derived` components are not replicated, so each client derives its own fragment positions. Any gameplay consequence means clients disagreeing about cover, which is an authority violation rather than a fidelity difference. §5.2's "anything that can't obey the rules is cosmetic-only" already decided this; it just was not written down.
 
-The budget closes, but only if relevance ordering *is* the netcode rather than an optimization layered on it, and the interpolation-delay governor absorbs far more staleness than `ARCHITECTURE.md` §1.3 implies. This sits in tension with §1's stressor table, which lists "twitch aiming with hitscan and ballistic weapons" at 64 players.
-
-**Suggested:** state the per-snapshot byte budget in §4 so it constrains the codec design from the start.
+**Why the cap may differ per class when nothing else in the census does:** because fragments cannot affect gameplay, a lower cap is a visual difference and not a divergence. That property is exactly what makes it safe to vary, and it would not be safe for any replicated class.
 
 ---
 
-## 12. Script outside the rollback boundary makes script-authored gameplay latency-visible
+## 11. The per-snapshot byte budget was never computed ✅
 
-**Severity: medium. Determines the M2 binding surface, decidable only in M1.**
-
-`ARCHITECTURE.md` §10.1 places script inside the replay boundary and outside the rollback boundary: rollback "replays recorded commands and never re-invokes JS," and script policy "runs exactly once per logical tick." This is an elegant result — it removes script determinism from the correctness-critical path entirely.
-
-The unstated consequence is that **anything authored in script is unpredicted, and therefore displays at full RTT.** §10.1's "script defines policy and reacts to events" and §18.14's ban on per-entity-per-tick callbacks together imply script is not on the prediction path at all, but the line between "policy" and "prediction-critical" is drawn nowhere. For the reference workload — a 64-player extraction shooter where weapon behaviour is plausibly script policy — that line determines what gameplay can live in JS.
-
-**Resolution requires:** classifying which component classes and event paths script may drive, in §10.1 or `SCHEMA_AND_EVOLUTION.md` §3's script-exposure field. Needed before M2's binding generator, decidable during M1.
+**Now:** §4.1 states it — 1,500 bytes per snapshot per client, ~180 of 512 relevant entities updated, an effective per-entity refresh near 11 Hz against a 64 Hz simulation. Recorded so it constrains the codec from the start rather than being rediscovered during M1, and so the tension with §1's "twitch aiming" stressor is visible.
 
 ---
 
-## 13. `AGENTS.md` §3 describes a toolchain that does not exist
+## 12. Script outside the rollback boundary made script gameplay latency-visible ✅
 
-**Severity: medium. Actively misleads automated contributors.**
+**Was:** §10.1 places script outside the rollback boundary — elegant, because it removes script determinism from the correctness path. The unstated consequence is that script output is authoritative-only, so anything authored in script displays at full RTT and cannot be predicted. The line between "policy" and "prediction-critical" was drawn nowhere, and it decides what may be written in JS at all.
 
-§3 states "Zig, pinned. The version is in `build.zig.zon` and the toolchain is vendored." In fact `build.zig.zon` sets `minimum_zig_version = "0.16.0"`, which is a floor rather than a pin; nothing is vendored; there is no `zig-quickjs-ng` dependency; per-module optimization modes are not enforced in the build graph; and `build.zig` and `src/` are unmodified `zig init` output.
+**Now:** §10.1 gains the boundary as a table on component class — script may not write `predicted` components or participate in the rollback projection. Prediction-critical gameplay is native. For the reference workload: weapon fire, movement, and hit registration native; loadout, objective and extraction logic, scoring, spawn policy, and mission flow script. Enforced by `SCHEMA_AND_EVOLUTION.md` §3's script-exposure field and §10's check 10.
 
-An unpinned compiler on a pre-1.0 language is a determinism hazard specifically because `--verify-determinism` (§7) compares hashes across builds.
+**Why now rather than at M2:** the rule decides the binding surface the M2 generator emits, and getting it wrong is invisible until someone plays at 140 ms — at which point the fix is rewriting gameplay from JS into Zig.
 
-**Partially addressed:** `.github/workflows/ci.yml` pins `ZIG_VERSION: 0.16.0`, and §3 has been corrected to describe current state. Whether to vendor the toolchain outright remains open.
+---
+
+## 13. `AGENTS.md` §3 described a toolchain that did not exist ✅
+
+**Was:** claimed pinned and vendored; reality was a `minimum_zig_version` floor, nothing vendored, no `zig-quickjs-ng`, no per-module optimization enforcement, and stock `zig init` output.
+
+**Now:** §3 describes current state and marks the rest as intended. `.github/workflows/ci.yml` pins `ZIG_VERSION`. Whether to vendor the toolchain outright is still open, and is a real question rather than a defect — an unpinned compiler on a pre-1.0 language is a determinism hazard specifically because `--verify-determinism` compares hashes across builds.
+
+---
+
+## Deferred to measurement
+
+**Host island budget** — whether an authoritative host needs an island budget distinct from the client rollback budget, and whether authoritative simulation may degrade island fidelity under thermal pressure while holding cadence. `SCOPED_ROLLBACK.md` §7, promoted to `ARCHITECTURE.md` §21 item 5.
+
+This one is not resolvable by judgement. §2.3 takes the conservative reading — cadence gated, fidelity degradation not permitted — because that is falsifiable now and the permissive reading cannot be evaluated until a mobile host has been measured forming a 512-body island at minute 40. Resolving it by implementation is precisely what `AGENTS.md` §5's last bullet forbids.
 
 ---
 
 ## Verification notes
 
-Cross-compilation results in `CI_TIERS.md` §4 were produced against Zig 0.16.0 from a Windows host with no platform SDKs installed. External platform behaviour cited in §1 and §2:
+Cross-compilation results in `CI_TIERS.md` §4 were produced against Zig 0.16.0 from a Windows host with no platform SDKs installed. External platform behaviour cited above:
 
-- iPhone 12 / 4 GB jetsam limit — <https://developer.apple.com/forums/thread/688973>
+- iPhone 12 / 4 GB jetsam limit ≈ 2,098 MB — <https://developer.apple.com/forums/thread/688973>
 - Chrome QUIC connection migration not enabled by default — <https://groups.google.com/a/chromium.org/g/proto-quic/c/A4iaM8XW_zw>
 - Connection migration not exposed to the Web API — <https://quic-go.net/docs/quic/connection-migration/>
+- iOS cross-compilation needs `--libc`, not `--sysroot` — <https://github.com/ziglang/zig/issues/19217>

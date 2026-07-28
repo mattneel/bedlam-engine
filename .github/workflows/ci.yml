@@ -122,10 +122,9 @@ jobs:
   # ---------------------------------------------------------------------------
   # Test — native execution only. Cross-built artifacts are not run here.
   #
-  # This job is the substrate for cross-ISA determinism verification
-  # (docs/ARCHITECTURE.md §7). x86_64 and aarch64 both appear natively and on more
-  # than one OS, which is what `--verify-determinism` needs in order to mean anything.
-  # That row is not present yet — see docs/CI_TIERS.md §4.
+  # This job carries cross-ISA determinism verification (docs/ARCHITECTURE.md §7).
+  # x86_64 and aarch64 both appear natively and on more than one OS, which is what
+  # gives `--verify-determinism` something to disagree about.
   # ---------------------------------------------------------------------------
   test:
     name: test ${{ matrix.target.name }} · ${{ matrix.optimize }}
@@ -153,6 +152,11 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
       - name: test
         run: zig build test -Doptimize=${{ matrix.optimize }}
+
+      # ARCHITECTURE.md §7 and AGENTS.md §3. Runs on every native host so the tick loop
+      # is verified on both ISAs the matrix executes, not just the development one.
+      - name: verify-determinism
+        run: zig build verify-determinism -Doptimize=${{ matrix.optimize }}
 
   # ---------------------------------------------------------------------------
   # Schema identity. docs/SCHEMA_AND_EVOLUTION.md §10.

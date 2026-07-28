@@ -140,9 +140,17 @@ fn hashValue(sha: *std.crypto.hash.sha2.Sha256, comptime T: type, value: T) void
     switch (@typeInfo(T)) {
         .bool => sha.update(&[_]u8{@intFromBool(value)}),
         .int => |i| {
-            const Unsigned = std.meta.Int(.unsigned, @max(8, i.bits));
+            // Sign-extend to a byte-aligned width, then reinterpret as unsigned in two's
+            // complement. Going via @intCast to unsigned panics on every negative value —
+            // and Fixed.raw is signed, so that is the common case, not the edge case.
+            const bit_count = @max(8, i.bits);
+            const Signed = std.meta.Int(.signed, bit_count);
+            const Unsigned = std.meta.Int(.unsigned, bit_count);
+            const widened: Unsigned = switch (i.signedness) {
+                .signed => @bitCast(@as(Signed, value)),
+                .unsigned => @intCast(value),
+            };
             var buf: [@sizeOf(Unsigned)]u8 = undefined;
-            const widened: Unsigned = @intCast(@as(std.meta.Int(i.signedness, @max(8, i.bits)), value));
             std.mem.writeInt(Unsigned, &buf, widened, .little);
             sha.update(&buf);
         },

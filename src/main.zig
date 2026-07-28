@@ -37,5 +37,27 @@ pub fn main(init: std.process.Init) !void {
     });
     try out.print("fingerprint  {s}\n", .{&fp});
 
+    // AGENTS.md §3: "--verify-determinism runs in CI from the first tick loop."
+    const args = try init.minimal.args.toSlice(gpa);
+    for (args[1..]) |arg| {
+        if (!std.mem.eql(u8, arg, "--verify-determinism")) continue;
+
+        try out.print("\nverify-determinism\n", .{});
+        const report = try bedlam.sim.step.verifyDeterminism(gpa, 0xBED1A3, 512, 256);
+        try out.print("  ticks        {d}\n", .{report.ticks});
+        try out.print("  final        {s}\n", .{&report.final});
+
+        if (report.divergence) |dv| {
+            // The FIRST divergent tick. By the last one two diverged worlds differ
+            // everywhere and the report is useless for diagnosis.
+            try out.print("  DIVERGED at tick {d} ({s})\n", .{ dv.tick, dv.variation });
+            try out.print("    expected   {s}\n", .{&dv.expected});
+            try out.print("    actual     {s}\n", .{&dv.actual});
+            try out.flush();
+            return error.DeterminismDivergence;
+        }
+        try out.print("  OK - identical under every schedule permutation\n", .{});
+    }
+
     try out.flush();
 }

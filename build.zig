@@ -49,15 +49,6 @@ pub fn build(b: *std.Build) void {
     wire_mod.addImport("bedlam_schema", schema_mod);
     wire_mod.addImport("fpz", fpz_mod);
 
-    // Simulation core. ARCHITECTURE.md §7 profile 3 territory: no float, no ambient
-    // state, everything a pure function of explicit inputs.
-    const sim_mod = b.addModule("bedlam_sim", .{
-        .root_source_file = b.path("src/sim/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    sim_mod.addImport("fpz", fpz_mod);
-
     // World database. ARCHITECTURE.md §5.
     const world_mod = b.addModule("bedlam_world", .{
         .root_source_file = b.path("src/world/root.zig"),
@@ -66,6 +57,16 @@ pub fn build(b: *std.Build) void {
     });
     world_mod.addImport("bedlam_schema", schema_mod);
     world_mod.addImport("fpz", fpz_mod);
+
+    // Simulation core. ARCHITECTURE.md §7 profile 3 territory: no float, no ambient
+    // state, everything a pure function of explicit inputs.
+    const sim_mod = b.addModule("bedlam_sim", .{
+        .root_source_file = b.path("src/sim/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sim_mod.addImport("fpz", fpz_mod);
+    sim_mod.addImport("bedlam_world", world_mod);
 
     mod.addImport("bedlam_world", world_mod);
     mod.addImport("bedlam_schema", schema_mod);
@@ -154,6 +155,17 @@ pub fn build(b: *std.Build) void {
     const emit_run = b.addRunArtifact(emit);
     const manifest_file = emit_run.addOutputFileArg("manifest.txt");
     const install_manifest = b.addInstallFileWithDir(manifest_file, .prefix, "schema/manifest.txt");
+
+    // AGENTS.md §3 and ARCHITECTURE.md §7. A build step rather than only a library
+    // function, because §7 requires this to run in CI and a check nobody invokes is not
+    // a check.
+    if (!hosts_own_entry_point) {
+        const verify = b.addRunArtifact(artifact);
+        verify.addArg("--verify-determinism");
+        verify.has_side_effects = true;
+        const verify_step = b.step("verify-determinism", "Hash every tick and require identical results under schedule permutation");
+        verify_step.dependOn(&verify.step);
+    }
 
     const schema_step = b.step("schema", "Emit the canonical schema manifest");
     schema_step.dependOn(&install_manifest.step);

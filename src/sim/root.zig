@@ -7,7 +7,9 @@
 //! or a global.
 
 pub const rng = @import("rng.zig");
+pub const step = @import("step.zig");
 
 test {
     _ = rng;
+    _ = step;
 }

@@ -394,6 +394,23 @@ pub fn Receiver(comptime slots: usize) type {
                 nap.sleep(self.io) catch {};
             }
 
+            // If the wakeups did not work, say so BEFORE joining.
+            //
+            // The join below is the only thing here that can hang, and a hang in a test
+            // process is reported by the harness as "failed without output" — a message
+            // that names neither the test's state nor the cause. This has cost two rounds
+            // of guessing on CI hosts that cannot be reproduced locally, so the state goes
+            // to stderr where the harness will capture it.
+            if (self.live_threads.load(.acquire) > 0) {
+                const s4 = if (self.pair.ip4) |x| x.send_failures else 0;
+                const s6 = if (self.pair.ip6) |x| x.send_failures else 0;
+                std.debug.print(
+                    "udp.Receiver.stop: {d} thread(s) still blocked after {d} wakeups " ++
+                        "(send failures v4={d} v6={d}); join may hang\n",
+                    .{ self.live_threads.load(.acquire), attempt, s4, s6 },
+                );
+            }
+
             for (&self.threads) |*t| {
                 if (t.*) |thread| thread.join();
                 t.* = null;

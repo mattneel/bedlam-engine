@@ -93,6 +93,70 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
+        if (std.mem.eql(u8, arg, "--audio")) {
+            // M0 criterion 3, demonstrated rather than asserted. §18.20: compiling is not
+            // a working target. This opens the real default endpoint, runs the real
+            // render thread, and reports what the device actually did — a run that
+            // reports zero blocks has a mixer and no audio.
+            const plat = @import("bedlam_platform");
+            try out.print("\naudio\n", .{});
+
+            const Backend = plat.audio_backend orelse {
+                try out.print("  no audio backend for this target\n", .{});
+                try out.flush();
+                continue;
+            };
+
+            // One cycle of 480 Hz at 48 kHz is exactly 100 samples, so a looping source
+            // of that length is continuous with no discontinuity at the wrap — a period
+            // that does not divide evenly clicks once per loop.
+            const cycle = 100;
+            var tone: [cycle]i16 = undefined;
+            for (&tone, 0..) |*s, i| {
+                const theta = (@as(f64, @floatFromInt(i)) / cycle) * 2.0 * std.math.pi;
+                s.* = @intFromFloat(@round(@sin(theta) * 8000.0));
+            }
+            var sources = [_]?plat.mixer.Source{.{ .samples = &tone, .looping = true }};
+
+            var mixer: plat.mixer.Mixer = .empty;
+            mixer.setSources(&sources);
+            var ring: plat.audio_ring.Ring(256) = .empty;
+
+            var dev = Backend.Device.init(gpa, &mixer, &ring, .{});
+            defer dev.deinit();
+
+            dev.start() catch |err| {
+                // A machine with no endpoint must still run the game. §17 describes a
+                // mixer, not a requirement.
+                try out.print("  device unavailable: {t}\n", .{err});
+                try out.flush();
+                continue;
+            };
+
+            _ = ring.send(.{ .play = .{ .voice = 0, .asset = 0, .gain_q16 = plat.mixer.unity } });
+            _ = ring.send(.{ .set_position = .{ .voice = 0, .x = -1 << 24, .y = 0, .z = 0 } });
+
+            // Sweep the source left to right so the pan path is exercised audibly rather
+            // than only in a unit test.
+            var ms: u32 = 0;
+            while (ms < 1500) : (ms += 50) {
+                const x: i32 = @intCast(@divTrunc((@as(i64, ms) - 750) * (1 << 24), 750));
+                _ = ring.send(.{ .set_position = .{ .voice = 0, .x = x, .y = 0, .z = 0 } });
+                Backend.sleepMs(50);
+            }
+            dev.stop();
+
+            try out.print("  blocks       {d}\n", .{dev.telemetry.blocks.load(.monotonic)});
+            try out.print("  frames       {d}\n", .{dev.telemetry.frames.load(.monotonic)});
+            try out.print("  underruns    {d}\n", .{dev.telemetry.underruns.load(.monotonic)});
+            try out.print("  buf errors   {d}\n", .{dev.telemetry.buffer_errors.load(.monotonic)});
+            try out.print("  ring drops   {d}\n", .{ring.droppedCount()});
+            try out.print("  clipped      {d}\n", .{mixer.stats.clipped});
+            try out.print("  commands     {d}\n", .{mixer.stats.commands});
+            try out.flush();
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--world-digest")) {
             // The native side of the wasm32 conformance probe. Same seed, same entity
             // count, same tick count as tools/web — a digest that differs is §7's claim

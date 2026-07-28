@@ -16,6 +16,7 @@ const builtin = @import("builtin");
 pub const iface = @import("iface.zig");
 pub const assets = @import("assets.zig");
 pub const audio_ring = @import("audio_ring.zig");
+pub const mixer = @import("mixer.zig");
 pub const crash = @import("crash.zig");
 pub const lifecycle = @import("lifecycle.zig");
 
@@ -32,6 +33,16 @@ pub const backend = switch (builtin.os.tag) {
         "shipping target — silence here would mean a target with no platform layer at all."),
 };
 
+/// The audio render device, or `null` where none is implemented.
+///
+/// Optional rather than stubbed, because a stub `Device` that silently does nothing is the
+/// shape that lets a target ship with no audio and nothing noticing. A caller must handle
+/// `null`, which forces the absence to be visible at the call site.
+pub const audio_backend: ?type = switch (builtin.os.tag) {
+    .windows => @import("windows/audio.zig"),
+    else => null,
+};
+
 comptime {
     // The contract, checked at the boundary. A backend that drifts fails here, naming
     // itself, rather than at a call site in main.zig naming a target nobody was building.
@@ -42,7 +53,9 @@ test {
     _ = iface;
     _ = assets;
     _ = audio_ring;
+    _ = mixer;
     _ = crash;
     _ = lifecycle;
     _ = backend;
+    if (audio_backend) |a| _ = a;
 }

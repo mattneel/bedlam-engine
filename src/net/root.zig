@@ -8,7 +8,9 @@
 //! why this lives apart from `world` rather than inside it.
 
 pub const baseline = @import("baseline.zig");
+pub const snapshot = @import("snapshot.zig");
 
 test {
     _ = baseline;
+    _ = snapshot;
 }

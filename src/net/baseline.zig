@@ -130,13 +130,19 @@ pub fn Baseline(comptime Columns: type) type {
             self.pending_snapshot = snapshot;
         }
 
-        /// Acknowledge a snapshot, promoting the staged values to the baseline.
+        /// Acknowledge a snapshot, promoting its values to the baseline. Returns whether
+        /// it was applied.
         ///
         /// Out-of-order and duplicate acks are ordinary on an unreliable channel (§9.1
-        /// puts snapshots on `unreliable_unordered`), so an older ack is ignored rather
-        /// than rolling the baseline backwards.
-        pub fn acknowledge(self: *Self, snapshot: u64, entries: []const Record) !void {
-            if (snapshot <= self.last_acked_snapshot) return;
+        /// puts snapshots on `unreliable_unordered`), so an older or repeated ack is
+        /// ignored rather than rolling the baseline backwards.
+        ///
+        /// **An ack covers a whole snapshot, not one entity.** Calling this once per
+        /// entity with the same snapshot number applies the first and silently ignores
+        /// the rest, which presents as entities that are re-sent forever. The bool return
+        /// exists so that mistake is detectable instead of invisible.
+        pub fn acknowledge(self: *Self, snapshot: u64, entries: []const Record) !bool {
+            if (snapshot <= self.last_acked_snapshot) return false;
             for (entries) |r| {
                 try self.ensureSlot(r.entity.index);
                 self.records.items[r.entity.index] = .{
@@ -146,6 +152,7 @@ pub fn Baseline(comptime Columns: type) type {
                 };
             }
             self.last_acked_snapshot = snapshot;
+            return true;
         }
 
         /// Drop an entity from this client's view — despawn, or leaving the interest set.
@@ -209,14 +216,14 @@ test "an unchanged entity needs nothing" {
     var b = TestBaseline.init(std.testing.allocator);
     defer b.deinit();
 
-    try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
+    _ = try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
     try std.testing.expectEqual(@as(u32, 0), b.changedMask(mk(1), sample(10)));
 }
 
 test "only changed fields are marked" {
     var b = TestBaseline.init(std.testing.allocator);
     defer b.deinit();
-    try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
+    _ = try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
 
     var changed = sample(10);
     changed.health = 11;
@@ -234,7 +241,7 @@ test "the baseline advances on ack, not on send" {
     var b = TestBaseline.init(std.testing.allocator);
     defer b.deinit();
 
-    try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
+    _ = try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
     b.stage(2); // sent, not acked — imagine it is dropped
     b.stage(3);
 
@@ -243,14 +250,27 @@ test "the baseline advances on ack, not on send" {
     try std.testing.expectEqual(@as(u64, 1), b.last_acked_snapshot);
 }
 
+test "a repeated snapshot number is reported, not silently ignored" {
+    // Calling acknowledge once per entity with the same snapshot applies the first and
+    // drops the rest, which presents as entities re-sent forever. The bool makes it
+    // visible at the call site.
+    var b = TestBaseline.init(std.testing.allocator);
+    defer b.deinit();
+
+    try std.testing.expect(try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }}));
+    try std.testing.expect(!try b.acknowledge(1, &.{.{ .entity = mk(2), .values = sample(20), .acked_at = 1 }}));
+    // Entity 2 has no baseline, exactly as the return value said.
+    try std.testing.expectEqual(@as(u32, 0b11), b.changedMask(mk(2), sample(20)));
+}
+
 test "an out-of-order ack does not roll the baseline backwards" {
     // §9.1 puts snapshots on unreliable_unordered, so a late ack for an older snapshot is
     // ordinary rather than exceptional.
     var b = TestBaseline.init(std.testing.allocator);
     defer b.deinit();
 
-    try b.acknowledge(5, &.{.{ .entity = mk(1), .values = sample(50), .acked_at = 5 }});
-    try b.acknowledge(3, &.{.{ .entity = mk(1), .values = sample(30), .acked_at = 3 }});
+    _ = try b.acknowledge(5, &.{.{ .entity = mk(1), .values = sample(50), .acked_at = 5 }});
+    _ = try b.acknowledge(3, &.{.{ .entity = mk(1), .values = sample(30), .acked_at = 3 }});
 
     try std.testing.expectEqual(@as(u64, 5), b.last_acked_snapshot);
     try std.testing.expectEqual(@as(u32, 0), b.changedMask(mk(1), sample(50)));
@@ -266,7 +286,7 @@ test "a recycled entity index does not inherit the previous occupant's baseline"
     const first: Entity = .{ .index = 4, .generation = 1 };
     const recycled: Entity = .{ .index = 4, .generation = 2 };
 
-    try b.acknowledge(1, &.{.{ .entity = first, .values = sample(10), .acked_at = 1 }});
+    _ = try b.acknowledge(1, &.{.{ .entity = first, .values = sample(10), .acked_at = 1 }});
     try std.testing.expectEqual(@as(u32, 0b11), b.changedMask(recycled, sample(10)));
 }
 
@@ -279,9 +299,9 @@ test "two clients hold different baselines for the same entity" {
     var c = TestBaseline.init(gpa);
     defer c.deinit();
 
-    try a.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
-    try c.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
-    try a.acknowledge(2, &.{.{ .entity = mk(1), .values = sample(20), .acked_at = 2 }});
+    _ = try a.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
+    _ = try c.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
+    _ = try a.acknowledge(2, &.{.{ .entity = mk(1), .values = sample(20), .acked_at = 2 }});
 
     const now = sample(20);
     try std.testing.expectEqual(@as(u32, 0), a.changedMask(mk(1), now));
@@ -303,7 +323,7 @@ test "forget clears both the baseline and the interest bit" {
     var b = TestBaseline.init(std.testing.allocator);
     defer b.deinit();
     try b.setInterest(mk(1), true);
-    try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
+    _ = try b.acknowledge(1, &.{.{ .entity = mk(1), .values = sample(10), .acked_at = 1 }});
 
     b.forget(mk(1));
     try std.testing.expect(!b.isInterested(mk(1)));

@@ -149,6 +149,7 @@ The last one matters most. `SCOPED_ROLLBACK.md` is a research brief, not a spec.
 | How does scoped rollback work | `docs/SCOPED_ROLLBACK.md` — **unsolved, read the OPEN markers** |
 | Which CI tier may make a performance claim | `docs/CI_TIERS.md` |
 | What is known to be wrong with the spec | `docs/SPEC_DEFECTS.md` — **read before trusting a number** |
+| Why the platform code works around the toolchain | `docs/UPSTREAM_FINDINGS.md` — **read before "simplifying" `platform/udp.zig`** |
 
 `ARCHITECTURE.md` §21 lists open questions at the architecture level. If a task touches one, say so in the PR rather than resolving it silently.
 

@@ -1,0 +1,155 @@
+name: ci
+
+# Tier C — correctness. See docs/CI_TIERS.md.
+#
+# NOTHING IN THIS WORKFLOW IS ADMISSIBLE AS EVIDENCE ABOUT THE docs/ARCHITECTURE.md
+# §1 FLOOR, IN EITHER DIRECTION. Hosted runners have no GPU, no physical device, no
+# thermal envelope, no network shaping, and noisy shared vCPUs. A green run here means
+# the code compiles and is correct on the paths exercised. It does not mean the floor
+# is met, and it may never be cited as though it did — docs/CONFORMANCE_PROFILES.md §5
+# and docs/CI_TIERS.md §3.
+#
+# Measurement is Tier M and does not run here.
+#
+# The matrix carries one row per target family from docs/ARCHITECTURE.md §4.1, including
+# rows that do not yet pass. Rows marked `dark` are expected-failing and do not fail the
+# build; they exist so the matrix shape is correct from the first commit. Per AGENTS.md §4,
+# "six-platform CI added late is six-platform CI that never gets added." Lighting a dark row
+# is a build-graph change, not a CI restructure. Deleting one is a scope change.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # docs/ARCHITECTURE.md §2 and AGENTS.md §3 require a pinned compiler. build.zig.zon's
+  # `minimum_zig_version` is a floor, not a pin; this is the pin for CI.
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build — one row per target family in docs/ARCHITECTURE.md §4.1.
+  # ---------------------------------------------------------------------------
+  build:
+    name: build ${{ matrix.platform }} · ${{ matrix.status }}
+    runs-on: ${{ matrix.host }}
+    continue-on-error: ${{ matrix.status == 'dark' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- lit -------------------------------------------------------------
+          - platform: windows
+            target: x86_64-windows-gnu
+            host: ubuntu-latest
+            status: green
+
+          - platform: linux
+            target: x86_64-linux-gnu
+            host: ubuntu-latest
+            status: green
+
+          - platform: linux-arm64
+            target: aarch64-linux-gnu
+            host: ubuntu-latest
+            status: green
+
+          # Zig bundles libSystem .tbd stubs, so macOS cross-links from a Linux host
+          # with no Apple tooling. iOS does not — see the dark row below.
+          - platform: macos
+            target: aarch64-macos
+            host: ubuntu-latest
+            status: green
+
+          - platform: android
+            target: aarch64-linux-android
+            host: ubuntu-latest
+            status: green
+            # Covers the Zig-only portion. GameActivity/NDK surfaces (§4.1) will need
+            # the NDK on this row once the platform shim exists.
+
+          - platform: web-wasi
+            target: wasm32-wasi
+            host: ubuntu-latest
+            status: green
+            # Not the shipping web target. WASI supplies a POSIX surface the browser
+            # does not have; it is here as the wasm32 codegen canary until the
+            # freestanding row lights.
+
+          # --- dark ------------------------------------------------------------
+          - platform: ios
+            target: aarch64-ios
+            host: macos-latest
+            status: dark
+            # Fails as `unable to find libSystem system library`. Zig ships macOS stubs
+            # but not an iOS SDK; this needs Xcode, hence the macOS runner. Lights when
+            # the build graph points at the iOS SDK sysroot.
+
+          - platform: web
+            target: wasm32-freestanding
+            host: ubuntu-latest
+            status: dark
+            # The shipping web target (docs/CONFORMANCE_PROFILES.md §2 requires
+            # Worker + OffscreenCanvas + SharedArrayBuffer). Currently fails because the
+            # `zig init` entry point pulls std.Io.Threaded, which needs posix syscalls
+            # freestanding wasm has no answer for. The first M0 commit deletes that entry
+            # point. This row is the single best early warning for §18.17.
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: build
+        run: zig build -Dtarget=${{ matrix.target }}
+
+  # ---------------------------------------------------------------------------
+  # Test — native execution only. Cross-built artifacts are not run here.
+  #
+  # This job is the substrate for cross-ISA determinism verification
+  # (docs/ARCHITECTURE.md §7). x86_64 and aarch64 both appear natively and on more
+  # than one OS, which is what `--verify-determinism` needs in order to mean anything.
+  # That row is not present yet — see docs/CI_TIERS.md §4.
+  # ---------------------------------------------------------------------------
+  test:
+    name: test ${{ matrix.name }} · ${{ matrix.optimize }}
+    runs-on: ${{ matrix.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        optimize: [Debug, ReleaseSafe]
+        include:
+          - { name: windows-x86_64, host: windows-latest }
+          - { name: linux-x86_64,   host: ubuntu-latest }
+          - { name: linux-aarch64,  host: ubuntu-24.04-arm }
+          - { name: macos-aarch64,  host: macos-latest }
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: test
+        run: zig build test -Doptimize=${{ matrix.optimize }}
+
+  # ---------------------------------------------------------------------------
+  # Hygiene.
+  # ---------------------------------------------------------------------------
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - run: zig fmt --check build.zig src

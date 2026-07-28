@@ -599,6 +599,8 @@ Elixir control plane · fleet orchestration · matchmaking, editor session broke
 | `SCHEMA_AND_EVOLUTION.md` | Manifest, ID allocation, migration, negotiation. Everything depends on it. |
 | `CONFORMANCE_PROFILES.md` | What the floor is measured against. |
 | `SCOPED_ROLLBACK.md` | Design brief for the hardest problem. Research, not settled spec. |
+| `CI_TIERS.md` | Which tier of automated verification may speak about §1, and which may not. |
+| `SPEC_DEFECTS.md` | Known defects in this corpus. Unresolved by design — read before trusting a number. |
 | `../AGENTS.md` | Operating instructions for automated contributors. |
 
 ---

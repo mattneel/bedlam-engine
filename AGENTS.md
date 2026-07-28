@@ -48,7 +48,9 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 
 ## 3. Toolchain and conventions
 
-**Zig, pinned.** The version is in `build.zig.zon` and the toolchain is vendored. Do not upgrade the compiler as part of an unrelated task — Zig is pre-1.0 and upgrades are their own scheduled work.
+**Zig, pinned.** Do not upgrade the compiler as part of an unrelated task — Zig is pre-1.0 and upgrades are their own scheduled work.
+
+> **Current state.** `build.zig.zon` sets `minimum_zig_version = "0.16.0"`, which is a floor rather than a pin. The real pin today is `ZIG_VERSION` in `.github/workflows/ci.yml`. The toolchain is **not** vendored, there is no `zig-quickjs-ng` dependency yet, per-module optimization modes are **not** yet enforced in the build graph, and `build.zig` / `src/` are unmodified `zig init` output. The rest of this section describes the intended end state, not what is in the tree. See `docs/SPEC_DEFECTS.md` §13.
 
 - **Allocator as parameter.** Every subsystem takes an allocator. No global allocator use, no hidden allocation.
 - **Do not build hot paths on `std`.** `std` containers are fine for tooling and setup; simulation and rendering use engine containers.
@@ -64,6 +66,8 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 | Simulation inner loops, render extraction, job scheduling | `ReleaseFast` |
 
 **Testing.** Every parser gets a fuzz target. `--verify-determinism` runs in CI from the first tick loop. Cross-platform CI is not optional — a green build on one target proves nothing about the other five.
+
+**Two CI tiers, and only one may speak about the floor.** Tier C (correctness) runs on every commit on hosted runners and is **inadmissible as evidence about P0 in either direction**. Tier M (measurement) runs on physical devices on a schedule and is the only tier `docs/BENCHMARK_CONTRACT.md` recognizes. Never cite a green matrix as a performance result. See `docs/CI_TIERS.md`.
 
 ---
 
@@ -83,6 +87,8 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 - [ ] package, sign, install, launch
 
 Build the CI matrix before the second target. Six-platform CI added late is six-platform CI that never gets added.
+
+The matrix exists: `.github/workflows/ci.yml` carries one row per target family, **including rows that do not yet pass.** Dark rows are expected-failing with a named blocker rather than absent, so lighting one is a build-graph change and not a CI restructure. Do not delete a dark row to make the matrix green — that is a scope change. Current row status and the reachability constraints on physical-device criteria are in `docs/CI_TIERS.md` §4–§6.
 
 **M1 begins only after M0 is green on all six.** M1's exit gate is the §1 floor measured against `docs/BENCHMARK_CONTRACT.md`, and no renderer depth work happens before it passes.
 
@@ -113,6 +119,8 @@ The last one matters most. `SCOPED_ROLLBACK.md` is a research brief, not a spec.
 | How do component IDs, wire formats, and migrations work | `docs/SCHEMA_AND_EVOLUTION.md` |
 | What environment counts as conformant | `docs/CONFORMANCE_PROFILES.md` |
 | How does scoped rollback work | `docs/SCOPED_ROLLBACK.md` — **unsolved, read the OPEN markers** |
+| Which CI tier may make a performance claim | `docs/CI_TIERS.md` |
+| What is known to be wrong with the spec | `docs/SPEC_DEFECTS.md` — **read before trusting a number** |
 
 `ARCHITECTURE.md` §21 lists open questions at the architecture level. If a task touches one, say so in the PR rather than resolving it silently.
 

@@ -75,8 +75,12 @@ docs/
   SCHEMA_AND_EVOLUTION.md
   CONFORMANCE_PROFILES.md
   SCOPED_ROLLBACK.md   research brief, unsolved
+  CI_TIERS.md          which tier may make a performance claim
+  SPEC_DEFECTS.md      known defects, unresolved
+.github/workflows/
+  ci.yml               Tier C matrix — one row per target, dark rows included
 build.zig              (M0)
-build.zig.zon          pinned toolchain and dependencies
+build.zig.zon          package manifest
 src/                   portable engine
 platform/              per-target shims
 tools/                 content pipeline, schema generator

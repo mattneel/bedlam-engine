@@ -1,0 +1,9 @@
+# LF on checkout, on every platform.
+#
+# `zig fmt --check` fails on CRLF source (verified against Zig 0.16.0) even though
+# the compiler itself accepts it. Without this, a Windows clone with
+# core.autocrlf=true breaks the fmt step locally while CI stays green on Linux —
+# a per-developer failure that looks like a tooling bug.
+#
+# Six targets, one line ending.
+* text=auto eol=lf

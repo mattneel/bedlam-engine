@@ -101,6 +101,10 @@ Re-simulating a subset must equal re-simulating everything. Requirements:
 - **Reductions must be order-independent** or fixed-tree, per `ARCHITECTURE.md` §7.
 - **Random streams must be per-entity or per-system**, never global — a global PRNG advanced a different number of times during scoped replay produces divergence immediately.
 
+  **Implemented in `src/sim/rng.zig`, and the mechanism is that there is no stream.** `draw(root, tick, entity, stream)` is a pure function; nothing advances, so nothing can be advanced a different number of times. Keying on `tick` as well as entity is stronger than this bullet asks for, and is what scoped rollback specifically needs: a per-entity stream with internal state is immune to *ordering* differences but not to *count* differences, and a scoped replay steps the entities inside the causal island while leaving those outside it alone. On the next full tick their stream positions disagree. A function keyed by tick has no position to disagree about.
+
+  Integer-only, no float, wrapping operations throughout, with pinned vectors re-verified on big-endian and 32-bit architectures by `zig build cross`.
+
 **Validation:** `--verify-scoped-rollback` runs the same misprediction through scoped and full-world rollback and compares. Must be in CI from the first working implementation, and must run against the benchmark's recorded input streams, not synthetic cases.
 
 ---

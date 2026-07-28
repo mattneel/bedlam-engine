@@ -49,8 +49,18 @@ pub fn build(b: *std.Build) void {
     wire_mod.addImport("bedlam_schema", schema_mod);
     wire_mod.addImport("fpz", fpz_mod);
 
+    // Simulation core. ARCHITECTURE.md §7 profile 3 territory: no float, no ambient
+    // state, everything a pure function of explicit inputs.
+    const sim_mod = b.addModule("bedlam_sim", .{
+        .root_source_file = b.path("src/sim/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sim_mod.addImport("fpz", fpz_mod);
+
     mod.addImport("bedlam_schema", schema_mod);
     mod.addImport("bedlam_wire", wire_mod);
+    mod.addImport("bedlam_sim", sim_mod);
     mod.addImport("fpz", fpz_mod);
 
     const t = target.result;
@@ -153,6 +163,9 @@ pub fn build(b: *std.Build) void {
     const wire_tests = b.addTest(.{ .root_module = wire_mod });
     test_step.dependOn(&b.addRunArtifact(wire_tests).step);
 
+    const sim_tests = b.addTest(.{ .root_module = sim_mod });
+    test_step.dependOn(&b.addRunArtifact(sim_tests).step);
+
     addCrossStep(b);
 }
 
@@ -229,7 +242,14 @@ fn addCrossStep(b: *std.Build) void {
             wire.addImport("bedlam_schema", schema);
             wire.addImport("fpz", fpz_dep.module("fpz"));
 
-            for ([_]*std.Build.Module{ schema, wire }) |m| {
+            const sim = b.createModule(.{
+                .root_source_file = b.path("src/sim/root.zig"),
+                .target = rt,
+                .optimize = mode,
+            });
+            sim.addImport("fpz", fpz_dep.module("fpz"));
+
+            for ([_]*std.Build.Module{ schema, wire, sim }) |m| {
                 const t = b.addTest(.{ .root_module = m });
                 const run = b.addRunArtifact(t);
                 // Foreign binaries are cached aggressively; without this a green run can

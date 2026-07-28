@@ -163,7 +163,12 @@ pub fn apply(
     comptime Columns: type,
     w: anytype,
     r: *wire.bits.Reader,
+    /// Values for declared fields this world does not store. Must be semantically valid —
+    /// an identity quaternion, not zero.
+    decl_fallback: wire.codec.Storage(decl),
     /// Values a newly-spawned entity starts from, before the masked payload is applied.
+    /// Also supplies any field the declaration has and this world does not — see
+    /// `projectFor`, where a zero default is not merely imprecise but invalid.
     /// The authority sends a full mask for an entity the client has never seen
     /// (`baseline.changedMask` returns all-ones with no record), so in a healthy stream
     /// every field is overwritten and this is never observable. It exists so that a
@@ -190,16 +195,58 @@ pub fn apply(
         // must be consumed to its end even when a record cannot be applied, or every
         // subsequent record in it is parsed from the wrong bit offset.
         const known = w.isLive(e);
-        const base: Columns = if (known) currentOf(Columns, w, e) else defaults;
+        const base = projectFor(decl, Columns, if (known) currentOf(Columns, w, e) else defaults, decl_fallback);
         const values = try wire.codec.decodeMasked(decl, base, r);
+
+        // Written back BY NAME, not by position.
+        //
+        // A component declaration describes one component; a world holds many. The sim
+        // world carries `impulse` and `health` that no `Transform` frame mentions, and a
+        // positional copy would either fail to compile or write the wrong column. Fields
+        // the frame does not carry keep whatever the world already had — which is the
+        // correct meaning of "this frame is about the Transform".
+        var merged: Columns = if (known) currentOf(Columns, w, e) else defaults;
+        inline for (@typeInfo(Columns).@"struct".fields) |cf| {
+            if (@hasField(@TypeOf(values), cf.name)) {
+                @field(merged, cf.name) = @field(values, cf.name);
+            }
+        }
 
         if (known) {
             inline for (@typeInfo(Columns).@"struct".fields) |f| {
-                _ = w.set(e, f.name, @field(values, f.name));
+                _ = w.set(e, f.name, @field(merged, f.name));
             }
             out.updated += 1;
         } else {
-            if (try w.spawnAt(e, values)) out.spawned += 1 else out.unknown += 1;
+            if (try w.spawnAt(e, merged)) out.spawned += 1 else out.unknown += 1;
+        }
+    }
+    return out;
+}
+
+/// A world's columns as the declared component's storage type, by field name.
+///
+/// The delta baseline must be in the *declaration's* shape, not the world's: `decodeMasked`
+/// fills only the masked fields and returns the rest of its baseline unchanged.
+///
+/// **`fallback` is not decoration, and must be semantically valid.** A field the declaration
+/// has and the world does not — `Transform.rotation` against a world that stores no rotation
+/// — takes its value from here. Zero-filling instead is what the first version did, and it
+/// crashed: `fixedquant.quantizeQuat` asserts unit norm, and the zero quaternion has norm 0.
+/// The right default for a quaternion is identity, and only the caller knows the component
+/// well enough to say so.
+pub fn projectFor(
+    comptime decl: anytype,
+    comptime Columns: type,
+    cols: Columns,
+    fallback: wire.codec.Storage(decl),
+) wire.codec.Storage(decl) {
+    var out = fallback;
+    inline for (@typeInfo(@TypeOf(out)).@"struct".fields) |f| {
+        if (@hasField(Columns, f.name)) {
+            if (@TypeOf(@field(cols, f.name)) == f.type) {
+                @field(out, f.name) = @field(cols, f.name);
+            }
         }
     }
     return out;
@@ -275,7 +322,7 @@ fn replicate(gpa: std.mem.Allocator, src: *TestWorld, dst: *TestWorld) !Applied 
     fw.finish();
 
     var br = wire.bits.Reader.init(buf[0..bw.bytesWritten()]);
-    return apply(Transform, TCols, dst, &br, unit());
+    return apply(Transform, TCols, dst, &br, unit(), unit());
 }
 
 test "a frame round-trips one entity" {
@@ -401,7 +448,7 @@ test "a despawn removes the entity and a repeat is counted, not fatal" {
     fw.finish();
 
     var br = wire.bits.Reader.init(buf[0..bw.bytesWritten()]);
-    const applied = try apply(Transform, TCols, &client, &br, unit());
+    const applied = try apply(Transform, TCols, &client, &br, unit(), unit());
 
     try testing.expectEqual(@as(u32, 1), applied.despawned);
     try testing.expectEqual(@as(u32, 1), applied.unknown);
@@ -450,7 +497,7 @@ test "a partial mask leaves the other fields alone" {
     fw.finish();
 
     var br = wire.bits.Reader.init(buf[0..bw.bytesWritten()]);
-    _ = try apply(Transform, TCols, &client, &br, unit());
+    _ = try apply(Transform, TCols, &client, &br, unit(), unit());
 
     try testing.expectEqual(throughWire(posAt(11)).position[0].raw, client.get(e, "position").?[0].raw);
     try testing.expectEqual(Fixed.ZERO.raw, client.get(e, "velocity").?[0].raw);
@@ -475,7 +522,7 @@ test "the count is patched, so a budget-truncated frame is still well-formed" {
     fw.finish();
 
     var br = wire.bits.Reader.init(buf[0..bw.bytesWritten()]);
-    const applied = try apply(Transform, TCols, &client, &br, unit());
+    const applied = try apply(Transform, TCols, &client, &br, unit(), unit());
     try testing.expectEqual(@as(u16, 5), fw.count);
     try testing.expectEqual(@as(u32, 5), applied.spawned);
     try testing.expectEqual(@as(u64, 9), applied.tick);
@@ -496,7 +543,7 @@ test "a frame claiming more records than it carries is refused, not truncated" {
     try bw.writeBits(500, 16); // count, wildly more than the bytes hold
 
     var br = wire.bits.Reader.init(buf[0..bw.bytesWritten()]);
-    try testing.expectError(error.EndOfStream, apply(Transform, TCols, &client, &br, unit()));
+    try testing.expectError(error.EndOfStream, apply(Transform, TCols, &client, &br, unit(), unit()));
 }
 
 test "an absurd record count is refused immediately" {
@@ -506,7 +553,7 @@ test "an absurd record count is refused immediately" {
 
     var buf: [64]u8 = @splat(0xFF);
     var br = wire.bits.Reader.init(&buf);
-    try testing.expectError(Error.TooManyRecords, apply(Transform, TCols, &client, &br, unit()));
+    try testing.expectError(Error.TooManyRecords, apply(Transform, TCols, &client, &br, unit(), unit()));
 }
 
 test "a long run of spawns, updates and despawns keeps every replica identical" {
@@ -547,7 +594,7 @@ test "a long run of spawns, updates and despawns keeps every replica identical" 
                 fw.finish();
                 for ([_]*TestWorld{ &a, &b }) |w| {
                     var br = wire.bits.Reader.init(buf[0..bw.bytesWritten()]);
-                    _ = try apply(Transform, TCols, w, &br, unit());
+                    _ = try apply(Transform, TCols, w, &br, unit(), unit());
                 }
             },
         }

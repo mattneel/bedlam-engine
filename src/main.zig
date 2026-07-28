@@ -13,6 +13,10 @@ const bedlam = @import("bedlam_engine");
 /// The session's fingerprint field is the 64 hex characters `manifest.fingerprint` already
 /// produces. Copied rather than re-derived so the value on the wire is provably the same
 /// one this binary reports.
+/// Every field of the replicated component. The demo sends full frames rather than acked
+/// deltas -- see the steady-state comment in `--net-demo`.
+const full_mask_demo: u32 = (1 << 3) - 1;
+
 fn fp64(hex: *const [64]u8) [64]u8 {
     return hex.*;
 }
@@ -194,25 +198,116 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             }
 
-            // --- steady state: snapshots one way, acks the other ---
+            // --- steady state: a real simulated world, replicated ---
+            //
+            // Not dummy payloads. The server steps `sim.step` and sends replication
+            // frames; the client applies them into a replica world. The claim at the end
+            // is the one that matters: the replica's canonical digest equals that of a
+            // reference replica fed the identical frames in-process, so the network path
+            // introduces nothing.
+            //
+            // Full-mask frames rather than acked deltas, deliberately. §12's delta path
+            // needs `baseline.acknowledge` driven by the session's ack, and until that is
+            // wired a lost packet would leave the replica permanently stale. A full frame
+            // is idempotent, so loss costs freshness and never correctness — the honest
+            // subset to demonstrate first.
+            var world = try bedlam.sim.step.seedWorld(gpa, 0xBED1A3, 64);
+            defer world.deinit();
+            var replica = try @TypeOf(world).init(gpa, 4096, world.component_ids);
+            defer replica.deinit();
+            var reference = try @TypeOf(world).init(gpa, 4096, world.component_ids);
+            defer reference.deinit();
+
+            const Cols = @TypeOf(world).ColumnSet;
+            const decl = bedlam.schema.schema.components[0];
+            const defaults: Cols = std.mem.zeroes(Cols);
+            // The sim world stores no rotation, so every frame carries the declaration's
+            // identity quaternion. Zero is not merely imprecise here — `quantizeQuat`
+            // asserts unit norm, and the zero quaternion has norm 0.
+            const Decl = bedlam.wire.codec.Storage(decl);
+            var ident: Decl = std.mem.zeroes(Decl);
+            ident.rotation = .{
+                bedlam.fpz.Fixed.ONE,
+                bedlam.fpz.Fixed.ZERO,
+                bedlam.fpz.Fixed.ZERO,
+                bedlam.fpz.Fixed.ZERO,
+            };
+
             const ticks = 240;
-            var delivered: u32 = 0;
-            var payload: [256]u8 = undefined;
+            var frames_sent: u32 = 0;
+            var frames_applied: u32 = 0;
+            var frame_buf: [sess.max_datagram]u8 = undefined;
 
-            for (0..ticks) |tick| {
-                std.mem.writeInt(u64, payload[0..8], tick, .little);
-                const sn = server.writeData(&payload, &pkt) catch continue;
+            for (0..ticks) |_| {
+                bedlam.sim.step.step(&world, 0xBED1A3, &bedlam.sim.step.System.all);
+                world.advanceTick();
+                replica.advanceTick();
+                reference.advanceTick();
+
+                // Assemble one frame. The datagram budget is what decides how many
+                // entities fit, which is exactly §4.1's arithmetic doing its job.
+                var bw = bedlam.wire.bits.Writer.init(&frame_buf);
+                var fw = try bedlam.net.replicate.Writer.begin(&bw, world.tick, frames_sent);
+
+                // Gather, then iterate from a rotating offset.
+                //
+                // 64 Transforms do not fit in one 1200-byte datagram — §4.1's arithmetic
+                // says about 180 per 1500 bytes only when nothing else shares the packet,
+                // and the session header and record prefixes are not nothing. Iterating
+                // from index 0 every frame therefore drops the SAME entities forever, and
+                // the replica settles at 62 of 64 with no error anywhere.
+                //
+                // `snapshot.zig`'s priority accumulator is the real answer: a deferred
+                // entity's priority rises until it is sent. This rotation is the crude
+                // stand-in, used because the scheduler is coupled to the acked-delta path
+                // this demo deliberately does not use yet. Naming it as a stand-in matters
+                // — a rotation is fair but not *prioritised*, and §12 wants the latter.
+                var handles: [512]bedlam.world.entity.Entity = undefined;
+                var live_n: usize = 0;
+                var it = world.table.chunkIterator();
+                while (it.next()) |c| {
+                    for (c.liveEntities()) |ent| {
+                        if (live_n < handles.len) {
+                            handles[live_n] = ent;
+                            live_n += 1;
+                        }
+                    }
+                }
+
+                outer: {
+                    for (0..live_n) |k| {
+                        const ent = handles[(k + frames_sent * 8) % live_n];
+                        var cols: Cols = undefined;
+                        inline for (@typeInfo(Cols).@"struct".fields) |f| {
+                            @field(cols, f.name) = world.table.get(ent, f.name).?;
+                        }
+                        const values = bedlam.net.replicate.projectFor(decl, Cols, cols, ident);
+                        const cost = bedlam.net.replicate.Writer.recordCost(
+                            comptime bedlam.wire.codec.componentBits(decl),
+                        );
+                        if ((bw.bitsWritten() + cost + 7) / 8 + sess.Header.size > sess.max_datagram) break :outer;
+                        try fw.writeUpdate(decl, ent, values, full_mask_demo);
+                    }
+                }
+                fw.finish();
+                const frame = frame_buf[0..bw.bytesWritten()];
+
+                // The reference replica gets the identical bytes with no network involved.
+                var ref_reader = bedlam.wire.bits.Reader.init(frame);
+                _ = try bedlam.net.replicate.apply(decl, Cols, &reference, &ref_reader, ident, defaults);
+
+                const sn = server.writeData(frame, &pkt) catch continue;
                 _ = server_rx.send(client_addr.?, pkt[0..sn]);
+                frames_sent += 1;
 
-                // Drain both ends, which is what a frame loop does: a bounded number of
-                // ring pops, no syscall, no wait.
                 var drained: u32 = 0;
-                while (drained < 16) : (drained += 1) {
+                while (drained < 8) : (drained += 1) {
                     if (client_rx.poll()) |d| {
                         const got = client.receive(d.bytes, &out_buf) catch continue;
                         if (got == .data) {
-                            delivered += 1;
-                            // The client's next packet carries the ack the server needs.
+                            var r = bedlam.wire.bits.Reader.init(got.data);
+                            _ = bedlam.net.replicate.apply(decl, Cols, &replica, &r, ident, defaults) catch continue;
+                            frames_applied += 1;
                             const cn = client.writePing(&pkt) catch continue;
                             _ = client_rx.send(server_addr, pkt[0..cn]);
                         }
@@ -223,6 +318,24 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
 
+            // Drain whatever is still in flight, so the comparison is of two settled
+            // worlds rather than of a race.
+            var settle: u32 = 0;
+            while (settle < 100_000 and frames_applied < frames_sent) : (settle += 1) {
+                if (client_rx.poll()) |d| {
+                    const got = client.receive(d.bytes, &out_buf) catch continue;
+                    if (got == .data) {
+                        var r = bedlam.wire.bits.Reader.init(got.data);
+                        _ = bedlam.net.replicate.apply(decl, Cols, &replica, &r, ident, defaults) catch continue;
+                        frames_applied += 1;
+                    }
+                }
+            }
+
+            const d_authority = try bedlam.world.hash.hashWorld(gpa, &world);
+            const d_replica = try bedlam.world.hash.hashWorld(gpa, &replica);
+            const d_reference = try bedlam.world.hash.hashWorld(gpa, &reference);
+
             // Captured BEFORE the orderly close, because `bye` moves both ends to
             // `ended` and reporting after it would show a session that never established.
             const both_up = client.isEstablished() and server.isEstablished();
@@ -231,16 +344,23 @@ pub fn main(init: std.process.Init) !void {
             _ = client_rx.send(server_addr, pkt[0..bn]);
 
             // Let the server observe the close, so the reported end state is the real one.
-            var settle: u32 = 0;
-            while (settle < 200_000 and server.state != .ended) : (settle += 1) {
+            var closing: u32 = 0;
+            while (closing < 200_000 and server.state != .ended) : (closing += 1) {
                 if (server_rx.poll()) |d| _ = server.receive(d.bytes, &out_buf) catch {};
             }
 
             try out.print("  server       {f}\n", .{server_addr});
             try out.print("  retries      {d}\n", .{retries});
             try out.print("  established  {}\n", .{both_up});
-            try out.print("  sent         {d} snapshots\n", .{ticks});
-            try out.print("  delivered    {d}\n", .{delivered});
+            try out.print("  frames       {d} sent / {d} applied\n", .{ frames_sent, frames_applied });
+            try out.print("  entities     {d} / {d}\n", .{ replica.liveCount(), world.liveCount() });
+            try out.print("  authority    {s}\n", .{&bedlam.world.hash.hexDigest(d_authority)});
+            try out.print("  replica      {s}\n", .{&bedlam.world.hash.hexDigest(d_replica)});
+            try out.print("  reference    {s}\n", .{&bedlam.world.hash.hexDigest(d_reference)});
+            // The claim: the world that crossed a real socket is byte-identical to the one
+            // that did not. The authority differs from both, and must — the wire quantizes.
+            try out.print("  over-wire == in-process  {}\n", .{std.mem.eql(u8, &d_replica, &d_reference)});
+            try out.print("  quantized (expected)     {}\n", .{!std.mem.eql(u8, &d_authority, &d_replica)});
             try out.print("  acked        {d}\n", .{server.acked_by_peer});
             try out.print("  duplicates   {d}\n", .{server.duplicates + client.duplicates});
             try out.print("  overruns     {d}\n", .{server_rx.overruns.load(.monotonic) +

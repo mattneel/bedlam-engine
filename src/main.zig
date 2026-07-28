@@ -40,6 +40,24 @@ pub fn main(init: std.process.Init) !void {
     // AGENTS.md §3: "--verify-determinism runs in CI from the first tick loop."
     const args = try init.minimal.args.toSlice(gpa);
     for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--crash-report")) {
+            // M0 criterion 9, demonstrated rather than asserted: capture a report from a
+            // real stack and render it. The value is the CONTEXT — build, schema, tick,
+            // seed — which is what turns a crash into a replay (§5.1) rather than a stack
+            // of addresses nobody can re-enter.
+            const plat = @import("bedlam_platform");
+            plat.crash.Context.setBuildId(bedlam.version ++ "-" ++ @tagName(@import("builtin").cpu.arch));
+            plat.crash.Context.setSchemaFingerprint(&fp);
+            plat.crash.Context.setTick(41_203);
+            plat.crash.Context.setSeed(0xBED1A3);
+
+            const report = plat.crash.capture("demonstration capture, not a real fault");
+            var render_buf: [4096]u8 = undefined;
+            try out.print("\n{s}", .{plat.crash.render(&report, &render_buf)});
+            try out.flush();
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--window")) {
             // M0 criterion 1, exercised for real: create a surface, pump the OS message
             // loop, and report what came back. AGENTS.md §4 lists this first.

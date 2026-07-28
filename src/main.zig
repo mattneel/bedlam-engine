@@ -40,6 +40,22 @@ pub fn main(init: std.process.Init) !void {
     // AGENTS.md §3: "--verify-determinism runs in CI from the first tick loop."
     const args = try init.minimal.args.toSlice(gpa);
     for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--world-digest")) {
+            // The native side of the wasm32 conformance probe. Same seed, same entity
+            // count, same tick count as tools/web — a digest that differs is §7's claim
+            // failing on the target where it is hardest.
+            var w = try bedlam.sim.step.seedWorld(gpa, 0xBED1A3, 64);
+            defer w.deinit();
+            for (0..128) |_| bedlam.sim.step.step(&w, 0xBED1A3, &bedlam.sim.step.System.all);
+
+            const d = try bedlam.world.hash.hashWorld(gpa, &w);
+            try out.print("\nworld-digest\n", .{});
+            try out.print("  ticks        {d}\n", .{w.tick});
+            try out.print("  live         {d}\n", .{w.liveCount()});
+            try out.print("  digest       {s}\n", .{&bedlam.world.hash.hexDigest(d)});
+            continue;
+        }
+
         if (!std.mem.eql(u8, arg, "--verify-determinism")) continue;
 
         try out.print("\nverify-determinism\n", .{});

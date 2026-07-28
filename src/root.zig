@@ -13,6 +13,7 @@ pub const wire = @import("bedlam_wire");
 pub const sim = @import("bedlam_sim");
 pub const world = @import("bedlam_world");
 pub const net = @import("bedlam_net");
+pub const fpz = @import("fpz");
 
 /// Pre-1.0. `ARCHITECTURE.md` §19 states exit criteria rather than versions, so this
 /// tracks milestones and not semver promises.

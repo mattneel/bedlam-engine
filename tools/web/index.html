@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bedlam — wasm32 conformance probe</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 2rem; max-width: 70ch; }
+  h1 { font-size: 1.1rem; }
+  dt { font-weight: 600; margin-top: .6rem; }
+  dd { margin: 0 0 0 1.5rem; word-break: break-all; }
+  .ok { color: #0a7f3f; } .bad { color: #b00020; }
+  small { color: #555; display: block; margin-top: 1.5rem; }
+</style>
+
+<h1>Bedlam — wasm32 conformance probe</h1>
+<dl id="out"></dl>
+<small>
+  Steps the same simulation the native binary runs and reports the canonical world digest.
+  A matching digest is the claim <code>ARCHITECTURE.md</code> §7 makes: cross-architecture
+  agreement is constructed, not assumed — and wasm32 is where it is hardest.
+</small>
+
+<script type="module">
+import { boot } from './bedlam.mjs';
+
+const out = document.getElementById('out');
+const row = (k, v, cls) => {
+  out.insertAdjacentHTML('beforeend',
+    `<dt>${k}</dt><dd class="${cls ?? ''}">${v}</dd>`);
+};
+
+// docs/CONFORMANCE_PROFILES.md §2: the conformant web profile requires cross-origin
+// isolation. A build served without COOP/COEP is a COMPATIBILITY-profile deployment
+// regardless of what the browser can do, and §5 makes measurements taken there
+// inadmissible. Report it rather than let it be assumed.
+row('crossOriginIsolated', String(crossOriginIsolated),
+    crossOriginIsolated ? 'ok' : 'bad');
+row('SharedArrayBuffer', typeof SharedArrayBuffer !== 'undefined' ? 'present' : 'absent',
+    typeof SharedArrayBuffer !== 'undefined' ? 'ok' : 'bad');
+row('OffscreenCanvas', typeof OffscreenCanvas !== 'undefined' ? 'present' : 'absent',
+    typeof OffscreenCanvas !== 'undefined' ? 'ok' : 'bad');
+row('WebGPU', navigator.gpu ? 'present' : 'absent', navigator.gpu ? 'ok' : 'bad');
+row('WebTransport', typeof WebTransport !== 'undefined' ? 'present' : 'absent',
+    typeof WebTransport !== 'undefined' ? 'ok' : 'bad');
+
+const b = await boot('./bedlam_engine.wasm');
+row('components', b.componentCount());
+row('transform bits', b.transformBits());
+row('fingerprint', b.fingerprint());
+
+b.init(0xBED1A3n, 64);
+b.step(0xBED1A3n, 128);
+
+row('ticks', b.tick());
+row('live entities', b.liveCount());
+row('world digest', b.digest());
+
+window.__bedlam = {
+  fingerprint: b.fingerprint(),
+  digest: b.digest(),
+  ticks: b.tick(),
+  live: b.liveCount(),
+  isolated: crossOriginIsolated,
+};
+</script>

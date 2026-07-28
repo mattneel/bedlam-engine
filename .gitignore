@@ -4,3 +4,5 @@ zig-out/
 zig-pkg/
 .zig-cache/
 zig-cache/
+# Built by `zig build web`, compared against native by tools/web/check.mjs.
+tools/web/bedlam_engine.wasm

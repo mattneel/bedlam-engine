@@ -88,7 +88,7 @@ pub fn Scheduler(comptime Columns: type) type {
             w: anytype,
             base: *BaselineType,
             writer: *wire.bits.Writer,
-            budget_bytes: usize,
+            budget_bytes: u64,
             weight: u32,
         ) !Stats {
             self.candidates.clearRetainingCapacity();
@@ -123,12 +123,15 @@ pub fn Scheduler(comptime Columns: type) type {
                 }
             }.less);
 
-            const mask_bits = comptime @typeInfo(Columns).@"struct".fields.len;
+            const mask_bits: u64 = comptime @typeInfo(Columns).@"struct".fields.len;
             var stats: Stats = .{ .sent = 0, .deferred = 0, .bytes = 0, .max_deferred_priority = 0 };
 
             for (self.candidates.items) |cand| {
-                const cost_bits = mask_bits + maskedBits(decl, cand.mask);
-                const would_be = (writer.bitsWritten() + cost_bits + 7) / 8;
+                // u64 throughout: bit offsets are u64 on every target (bits.zig widened
+                // them for wasm32), and mixing them with usize does not coerce where
+                // usize is 32 bits. The cross gate caught this on arm and mips.
+                const cost_bits: u64 = mask_bits + maskedBits(decl, cand.mask);
+                const would_be: u64 = (writer.bitsWritten() + cost_bits + 7) / 8;
                 if (would_be > budget_bytes) {
                     // Deferred, not dropped: priority is retained and rises next snapshot.
                     stats.deferred += 1;
@@ -142,7 +145,7 @@ pub fn Scheduler(comptime Columns: type) type {
                 stats.sent += 1;
             }
 
-            stats.bytes = (writer.bitsWritten() + 7) / 8;
+            stats.bytes = @intCast((writer.bitsWritten() + 7) / 8);
             return stats;
         }
     };
@@ -157,8 +160,8 @@ fn componentOf(comptime Columns: type, w: anytype, e: Entity) Columns {
 }
 
 /// Bits a masked update occupies, excluding the mask itself.
-fn maskedBits(comptime decl: anytype, mask: u32) usize {
-    var total: usize = 0;
+fn maskedBits(comptime decl: anytype, mask: u32) u64 {
+    var total: u64 = 0;
     inline for (decl.fields, 0..) |f, i| {
         if (mask & (@as(u32, 1) << @intCast(i)) != 0) total += comptime wire.codec.fieldBits(f);
     }

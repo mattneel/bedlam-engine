@@ -199,6 +199,36 @@ jobs:
           test -n "$fp" || { echo "::error::no fingerprint in manifest"; exit 1; }
 
   # ---------------------------------------------------------------------------
+  # wasm32 conformance probe. ARCHITECTURE.md §7.
+  #
+  # §7 calls bit-exact cross-architecture determinism "folklore" and says not to design
+  # around it. The engine's answer is to CONSTRUCT agreement — fixed point inside the
+  # rollback boundary, integer-only quantization, explicit little-endian hashing — and
+  # wasm32 is where that is hardest: 32-bit, a different ISA, a different backend.
+  #
+  # This steps the same simulation in both and compares the canonical world digest. It
+  # needs no browser and no GPU; the browser probe in tools/web/index.html additionally
+  # reports the CONFORMANCE_PROFILES.md §3 capability set and is run locally.
+  # ---------------------------------------------------------------------------
+  wasm:
+    name: wasm32 vs native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: build both
+        run: |
+          zig build web
+          zig build
+      - name: compare canonical world digest
+        run: node tools/web/check.mjs zig-out/bin/bedlam_engine
+
+  # ---------------------------------------------------------------------------
   # Foreign-architecture verification under qemu. ARCHITECTURE.md §7.
   #
   # This exists because the matrix above CANNOT falsify two whole classes of bug:

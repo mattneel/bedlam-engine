@@ -4,88 +4,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // The portable engine. Its imports are wired after the modules it depends on.
-    const mod = b.addModule("bedlam_engine", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-    });
-
-    // Schema, identity, and manifest generation. docs/SCHEMA_AND_EVOLUTION.md.
-    //
-    // The registry is embedded rather than read at runtime: parsing it at comptime is
-    // what makes §10 checks 1, 2, 3, 9 and 10 build failures instead of test failures.
-    // A violation produces no binary, which is the point — an engine that compiles with
-    // a reused tombstone will ship with one.
-    const schema_mod = b.addModule("bedlam_schema", .{
-        .root_source_file = b.path("src/schema/root.zig"),
-        .target = target,
-    });
-    schema_mod.addAnonymousImport("registry_text", .{
-        .root_source_file = b.path("schema/registry.txt"),
-    });
-
-    // Deterministic fixed point. ARCHITECTURE.md §7 requires, inside the rollback
-    // boundary: fixed point, no FMA contraction, no fast-math, and "own polynomial
-    // transcendentals, never platform libm". fpz is exactly that contract — Q40.24 over
-    // an i64, integer-only at runtime, float permitted only at comptime, and every
-    // operation total (a defined result for all inputs, including overflow).
-    //
-    // Pinned by commit rather than branch: §14.2 requires reproducible builds, and a
-    // moving dependency under a determinism claim is a determinism hazard.
-    const fpz = b.dependency("fpz", .{ .target = target, .optimize = optimize });
-    const fpz_mod = fpz.module("fpz");
-
-    // Wire format: bit packing, quantization, generated codecs.
-    //
-    // AGENTS.md §3 puts packet parse in ReleaseSafe regardless of the surrounding build
-    // mode. This is the untrusted side of a trust boundary (§14.2) and Zig's safety
-    // checks are cheaper than the CVE. The optimize mode is set here rather than left to
-    // the caller so the rule is enforced by the build graph, not by convention.
-    const wire_mod = b.addModule("bedlam_wire", .{
-        .root_source_file = b.path("src/wire/root.zig"),
-        .target = target,
-        .optimize = .ReleaseSafe,
-    });
-    wire_mod.addImport("bedlam_schema", schema_mod);
-    wire_mod.addImport("fpz", fpz_mod);
-
-    // World database. ARCHITECTURE.md §5.
-    const world_mod = b.addModule("bedlam_world", .{
-        .root_source_file = b.path("src/world/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    world_mod.addImport("bedlam_schema", schema_mod);
-    world_mod.addImport("fpz", fpz_mod);
-
-    // Simulation core. ARCHITECTURE.md §7 profile 3 territory: no float, no ambient
-    // state, everything a pure function of explicit inputs.
-    const sim_mod = b.addModule("bedlam_sim", .{
-        .root_source_file = b.path("src/sim/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    sim_mod.addImport("fpz", fpz_mod);
-    sim_mod.addImport("bedlam_world", world_mod);
-
-    // Replication. ARCHITECTURE.md §9.4.
-    const net_mod = b.addModule("bedlam_net", .{
-        .root_source_file = b.path("src/net/root.zig"),
-        .target = target,
-        .optimize = .ReleaseSafe,
-    });
-    net_mod.addImport("bedlam_wire", wire_mod);
-    net_mod.addImport("bedlam_world", world_mod);
-    net_mod.addImport("bedlam_schema", schema_mod);
-    net_mod.addImport("fpz", fpz_mod);
-
-    mod.addImport("bedlam_net", net_mod);
-    mod.addImport("bedlam_world", world_mod);
-    mod.addImport("bedlam_schema", schema_mod);
-    mod.addImport("bedlam_wire", wire_mod);
-    mod.addImport("bedlam_sim", sim_mod);
-    mod.addImport("fpz", fpz_mod);
-
+    const m = engineModules(b, target, optimize, true);
+    const mod = m.engine;
+    const schema_mod = m.schema;
+    const wire_mod = m.wire;
+    const world_mod = m.world;
+    const sim_mod = m.sim;
+    const net_mod = m.net;
     const t = target.result;
     const is_wasm_freestanding = t.cpu.arch.isWasm() and t.os.tag == .freestanding;
     const is_ios = t.os.tag == .ios;
@@ -179,6 +104,34 @@ pub fn build(b: *std.Build) void {
         verify_step.dependOn(&verify.step);
     }
 
+    // wasm32 conformance probe. ARCHITECTURE.md §7's claim is hardest to hold on this
+    // target — 32-bit, a different ISA, a different backend — so it is the one worth
+    // checking against the native build automatically.
+    const wasm_target = b.resolveTargetQuery(std.Target.Query.parse(
+        .{ .arch_os_abi = "wasm32-freestanding" },
+    ) catch @panic("bad wasm triple"));
+    const wasm_mods = engineModules(b, wasm_target, .ReleaseSmall, false);
+
+    const web_wasm = b.addExecutable(.{
+        .name = "bedlam_engine",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/web.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{.{ .name = "bedlam_engine", .module = wasm_mods.engine }},
+        }),
+    });
+    web_wasm.entry = .disabled;
+    web_wasm.rdynamic = true;
+
+    const install_wasm = b.addInstallFileWithDir(
+        web_wasm.getEmittedBin(),
+        .{ .custom = "../tools/web" },
+        "bedlam_engine.wasm",
+    );
+    const web_step = b.step("web", "Build the wasm32 module into tools/web");
+    web_step.dependOn(&install_wasm.step);
+
     const schema_step = b.step("schema", "Emit the canonical schema manifest");
     schema_step.dependOn(&install_manifest.step);
 
@@ -263,54 +216,9 @@ fn addCrossStep(b: *std.Build) void {
         const rt = b.resolveTargetQuery(query);
 
         for (modes) |mode| {
-            const fpz_dep = b.dependency("fpz", .{ .target = rt, .optimize = mode });
+            const mods = engineModules(b, rt, mode, false);
 
-            const schema = b.createModule(.{
-                .root_source_file = b.path("src/schema/root.zig"),
-                .target = rt,
-                .optimize = mode,
-            });
-            schema.addAnonymousImport("registry_text", .{
-                .root_source_file = b.path("schema/registry.txt"),
-            });
-
-            const wire = b.createModule(.{
-                .root_source_file = b.path("src/wire/root.zig"),
-                .target = rt,
-                .optimize = mode,
-            });
-            wire.addImport("bedlam_schema", schema);
-            wire.addImport("fpz", fpz_dep.module("fpz"));
-
-            // world before sim: sim/step.zig steps a World and hashes it, so the
-            // determinism harness is part of what the foreign architectures verify.
-            const world = b.createModule(.{
-                .root_source_file = b.path("src/world/root.zig"),
-                .target = rt,
-                .optimize = mode,
-            });
-            world.addImport("bedlam_schema", schema);
-            world.addImport("fpz", fpz_dep.module("fpz"));
-
-            const sim = b.createModule(.{
-                .root_source_file = b.path("src/sim/root.zig"),
-                .target = rt,
-                .optimize = mode,
-            });
-            sim.addImport("fpz", fpz_dep.module("fpz"));
-            sim.addImport("bedlam_world", world);
-
-            const net = b.createModule(.{
-                .root_source_file = b.path("src/net/root.zig"),
-                .target = rt,
-                .optimize = mode,
-            });
-            net.addImport("bedlam_wire", wire);
-            net.addImport("bedlam_world", world);
-            net.addImport("bedlam_schema", schema);
-            net.addImport("fpz", fpz_dep.module("fpz"));
-
-            for ([_]*std.Build.Module{ schema, wire, sim, world, net }) |m| {
+            for ([_]*std.Build.Module{ mods.schema, mods.wire, mods.sim, mods.world, mods.net }) |m| {
                 const t = b.addTest(.{ .root_module = m });
                 const run = b.addRunArtifact(t);
                 // Foreign binaries are cached aggressively; without this a green run can
@@ -322,4 +230,102 @@ fn addCrossStep(b: *std.Build) void {
             }
         }
     }
+}
+
+/// Every engine module, wired for one target and optimize mode.
+///
+/// One definition used by the default build, the `web` step and the `cross` gate. Three
+/// hand-maintained copies is how a module acquires an import in one place and not the
+/// others — which is exactly the failure that broke the cross gate when `sim` started
+/// depending on `world`.
+const Modules = struct {
+    schema: *std.Build.Module,
+    wire: *std.Build.Module,
+    world: *std.Build.Module,
+    sim: *std.Build.Module,
+    net: *std.Build.Module,
+    engine: *std.Build.Module,
+};
+
+fn engineModules(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    /// Named modules are visible to consumers of this package; anonymous ones are not.
+    /// Only the default build should name them, or a second call collides.
+    comptime named: bool,
+) Modules {
+    const create = struct {
+        fn f(bb: *std.Build, comptime nm: bool, name: []const u8, opts: std.Build.Module.CreateOptions) *std.Build.Module {
+            return if (nm) bb.addModule(name, opts) else bb.createModule(opts);
+        }
+    }.f;
+
+    // ARCHITECTURE.md §7's fixed-point contract, pinned by commit (§14.2).
+    const fpz = b.dependency("fpz", .{ .target = target, .optimize = optimize }).module("fpz");
+
+    // The registry is embedded rather than read at runtime: parsing it at comptime is
+    // what makes SCHEMA_AND_EVOLUTION.md §10 checks 1, 2, 3, 9 and 10 build failures
+    // instead of test failures. An engine that compiles with a reused tombstone ships
+    // with one.
+    const schema = create(b, named, "bedlam_schema", .{
+        .root_source_file = b.path("src/schema/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    schema.addAnonymousImport("registry_text", .{
+        .root_source_file = b.path("schema/registry.txt"),
+    });
+
+    // AGENTS.md §3 puts packet parse in ReleaseSafe regardless of the surrounding build
+    // mode: this is the untrusted side of a trust boundary (§14.2) and Zig's safety
+    // checks are cheaper than the CVE. Set here so the rule lives in the build graph
+    // rather than in a convention.
+    const wire = create(b, named, "bedlam_wire", .{
+        .root_source_file = b.path("src/wire/root.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+    });
+    wire.addImport("bedlam_schema", schema);
+    wire.addImport("fpz", fpz);
+
+    const world = create(b, named, "bedlam_world", .{
+        .root_source_file = b.path("src/world/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    world.addImport("bedlam_schema", schema);
+    world.addImport("fpz", fpz);
+
+    const sim = create(b, named, "bedlam_sim", .{
+        .root_source_file = b.path("src/sim/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sim.addImport("fpz", fpz);
+    sim.addImport("bedlam_world", world);
+
+    const net = create(b, named, "bedlam_net", .{
+        .root_source_file = b.path("src/net/root.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+    });
+    net.addImport("bedlam_wire", wire);
+    net.addImport("bedlam_world", world);
+    net.addImport("bedlam_schema", schema);
+    net.addImport("fpz", fpz);
+
+    const engine = create(b, named, "bedlam_engine", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    engine.addImport("bedlam_schema", schema);
+    engine.addImport("bedlam_wire", wire);
+    engine.addImport("bedlam_world", world);
+    engine.addImport("bedlam_sim", sim);
+    engine.addImport("bedlam_net", net);
+    engine.addImport("fpz", fpz);
+
+    return .{ .schema = schema, .wire = wire, .world = world, .sim = sim, .net = net, .engine = engine };
 }

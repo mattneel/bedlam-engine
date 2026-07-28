@@ -17,6 +17,9 @@
 
 param(
     [switch]$SkipCross,
+    # Off by default: it clears the cache and builds cold three times, which is minutes
+    # rather than seconds. CI runs it on every commit, where cold is the norm anyway.
+    [switch]$Reproducible,
     [string]$CacheDir = "/tmp/bedlam-wsl-cache"
 )
 
@@ -96,6 +99,10 @@ if (-not $SkipCross) {
     Step "cross (qemu: aarch64, s390x, arm, mips)" {
         wsl.exe -e bash -lc "cd '$wslPath' && zig build cross --cache-dir '$CacheDir' --summary all"
     }
+}
+
+if ($Reproducible) {
+    Step "package reproducibility" { & (Join-Path $PSScriptRoot "reproducible.ps1") }
 }
 
 Write-Host ""

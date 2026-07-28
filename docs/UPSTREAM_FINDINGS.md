@@ -136,6 +136,34 @@ Recorded because the migration is mechanical but the error messages are not: a m
 
 ---
 
+## 6. Zig honours `SOURCE_DATE_EPOCH`, and needs it for a reproducible PE
+
+Not a defect — a fact worth writing down, because the alternative fix is worse.
+
+**Where it matters:** `tools/package.zig`, `scripts/reproducible.ps1`.
+
+**Observed:** two cold builds of this repo, 30 seconds apart, produced
+`bedlam_engine.exe` differing in exactly **two bytes out of 2,586,112**:
+
+```
+offset      129  '2' vs 'P'      # COFF header TimeDateStamp
+offset  2488325  '2' vs 'P'      # its copy in the debug directory
+```
+
+`0x6a68db32` against `0x6a68db50` — 30 seconds, matching the gap between the builds.
+Everything else was identical, **including the RSDS debug GUID** that ties the binary to its
+PDB. So Zig and LLD are already reproducible on this target; one field is the wall clock.
+
+Setting `SOURCE_DATE_EPOCH` makes two cold builds byte-identical. Verified, and verified
+non-vacuously: a *different* epoch changes the output, so the check is measuring something.
+
+**Why not rewrite the binary instead:** the debug directory timestamp participates in PDB
+association for some toolchains, and M0 criterion 9 is crash capture *and symbolication*.
+Zeroing a field that a symbol server may key on, to win a property the environment already
+grants, is a bad trade.
+
+---
+
 ## How to retire an entry
 
 When a Zig upgrade fixes one of these, the workaround should be removed rather than left in

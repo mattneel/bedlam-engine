@@ -92,7 +92,7 @@ Each of these is in `docs/ARCHITECTURE.md` §18. They are restated here as thing
 | 7 | device loss and recovery | ✅ events + state machine | ◐ Linux has no device-loss source yet |
 | 8 | Worker + OffscreenCanvas (Web) | — | ✅ verified in headless Chrome |
 | 9 | crash capture and symbolication | ✅ capture + context | ✅ portable capture |
-| 10 | package, sign, install, launch | ⬛ | ⬛ |
+| 10 | package, sign, install, launch | ◐ reproducible package; unsigned | ◐ same, per row |
 
 **A criterion is met when it holds on all six targets, on physical devices, in CI.** None
 do. The Windows column is one machine, and `docs/CI_TIERS.md` §3 makes hosted-runner
@@ -117,6 +117,7 @@ Build the CI matrix before the second target. Six-platform CI added late is six-
 | Worker + OffscreenCanvas, verified in a real browser | `tools/web/worker.mjs`, `browser-check.mjs` |
 | X11 window and input, loaded with `dlopen` not linked | `platform/linux/window.zig` |
 | PulseAudio device, same mixer and telemetry shape | `platform/linux/audio.zig` |
+| Reproducible package (`zig build package`) | `tools/package.zig`, `scripts/reproducible.ps1` |
 
 Read that as "the kernel M1 needs is being built early because it can be verified without hardware", not as M0 progress.
 

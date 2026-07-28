@@ -284,6 +284,40 @@ jobs:
           done
 
   # ---------------------------------------------------------------------------
+  # M0 criterion 10's first quarter: the package is byte-identical across two COLD
+  # builds. Reusing the cache would prove only that Zig cached the artifact.
+  #
+  # SOURCE_DATE_EPOCH is required rather than optional — without it the PE TimeDateStamp
+  # is the wall clock. See docs/UPSTREAM_FINDINGS.md §6 for the measurement.
+  # ---------------------------------------------------------------------------
+  reproducible:
+    name: reproducible package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: two cold builds must agree
+        run: |
+          set -e
+          export SOURCE_DATE_EPOCH=1000000000
+          rm -rf .zig-cache && zig build package -p out-a
+          rm -rf .zig-cache && zig build package -p out-b
+          a=$(sha256sum out-a/package/*.tar | cut -d" " -f1)
+          b=$(sha256sum out-b/package/*.tar | cut -d" " -f1)
+          echo "a=$a"; echo "b=$b"
+          test "$a" = "$b" || { echo "package is NOT reproducible"; exit 1; }
+      - name: and the epoch must actually matter
+        run: |
+          set -e
+          export SOURCE_DATE_EPOCH=1500000000
+          rm -rf .zig-cache && zig build package -p out-c
+          a=$(sha256sum out-a/package/*.tar | cut -d" " -f1)
+          c=$(sha256sum out-c/package/*.tar | cut -d" " -f1)
+          test "$a" != "$c" || { echo "the epoch is ignored; the check above proves nothing"; exit 1; }
+
+  # ---------------------------------------------------------------------------
   # Foreign-architecture verification under qemu. ARCHITECTURE.md §7.
   #
   # This exists because the matrix above CANNOT falsify two whole classes of bug:

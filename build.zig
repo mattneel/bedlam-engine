@@ -39,6 +39,14 @@ pub fn build(b: *std.Build) void {
         .link_libc = target.result.os.tag == .linux and target.result.abi != .android,
     });
 
+    // Kept in step with `src/root.zig` by a test, not by build.zig cleverness.
+    //
+    // Reading it out of the source with `@embedFile` was the first attempt and it does not
+    // work from the build runner. A test that asserts the two agree is better anyway: it
+    // fails with a message naming both values, where a build-graph trick fails with a
+    // compile error about a marker string.
+    const engine_version = "0.0.0-M0";
+
     const t = target.result;
     const is_wasm_freestanding = t.cpu.arch.isWasm() and t.os.tag == .freestanding;
     const is_ios = t.os.tag == .ios;
@@ -166,6 +174,36 @@ pub fn build(b: *std.Build) void {
     const web_step = b.step("web", "Build the wasm32 module into tools/web");
     web_step.dependOn(&install_wasm.step);
 
+    // The archive itself. Built only where there is an executable to package — the Web
+    // and iOS rows produce a module and a static library, and "package" means something
+    // different for each (a served bundle, an Xcode app target). Pretending one step
+    // covers all three is how criterion 10 would look done without being.
+    if (!hosts_own_entry_point) {
+        const emit_pkg = b.addExecutable(.{
+            .name = "emit_package",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/emit_package.zig"),
+                .target = b.graph.host,
+                .optimize = .ReleaseSafe,
+                .imports = &.{.{ .name = "bedlam_schema", .module = schema_mod }},
+            }),
+        });
+
+        const run_pkg = b.addRunArtifact(emit_pkg);
+        const archive = run_pkg.addOutputFileArg("bedlam.tar");
+        run_pkg.addArg(engine_version);
+        run_pkg.addArg(b.fmt("{s}-{s}", .{ @tagName(t.cpu.arch), @tagName(t.os.tag) }));
+        run_pkg.addArtifactArg(artifact);
+        run_pkg.addFileArg(manifest_file);
+
+        const install_pkg = b.addInstallFileWithDir(archive, .prefix, b.fmt(
+            "package/bedlam-{s}-{s}-{s}.tar",
+            .{ engine_version, @tagName(t.cpu.arch), @tagName(t.os.tag) },
+        ));
+        const package_step = b.step("package", "Assemble a reproducible distributable archive");
+        package_step.dependOn(&install_pkg.step);
+    }
+
     const schema_step = b.step("schema", "Emit the canonical schema manifest");
     schema_step.dependOn(&install_manifest.step);
 
@@ -174,6 +212,28 @@ pub fn build(b: *std.Build) void {
 
     const mod_tests = b.addTest(.{ .root_module = mod });
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
+
+    // The package builder is a host tool and its tests run with everything else: a package
+    // that is not reproducible cannot be verified, and that deserves a test, not a hope.
+    //
+    // The version build.zig uses for the archive name is passed in, so a test can assert it
+    // matches the engine's. Two copies is how a package ends up labelled with a version the
+    // binary inside it disagrees on, and that surfaces to whoever is trying to reproduce a
+    // bug from a release. `@embedFile("../build.zig")` was the first attempt and is refused
+    // — a module may not embed outside its own path.
+    const pkg_opts = b.addOptions();
+    pkg_opts.addOption([]const u8, "engine_version", engine_version);
+
+    const package_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/package.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+        .imports = &.{
+            .{ .name = "bedlam_engine", .module = mod },
+            .{ .name = "build_options", .module = pkg_opts.createModule() },
+        },
+    }) });
+    test_step.dependOn(&b.addRunArtifact(package_tests).step);
 
     const artifact_tests = b.addTest(.{ .root_module = artifact.root_module });
     test_step.dependOn(&b.addRunArtifact(artifact_tests).step);

@@ -11,6 +11,7 @@ pub const baseline = @import("baseline.zig");
 pub const session = @import("session.zig");
 pub const replicate = @import("replicate.zig");
 pub const outbound = @import("outbound.zig");
+pub const host = @import("host.zig");
 pub const snapshot = @import("snapshot.zig");
 
 test {
@@ -18,5 +19,6 @@ test {
     _ = session;
     _ = replicate;
     _ = outbound;
+    _ = host;
     _ = snapshot;
 }

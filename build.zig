@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // The portable engine.
+    // The portable engine. Its imports are wired after the modules it depends on.
     const mod = b.addModule("bedlam_engine", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -36,6 +36,9 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
     });
     wire_mod.addImport("bedlam_schema", schema_mod);
+
+    mod.addImport("bedlam_schema", schema_mod);
+    mod.addImport("bedlam_wire", wire_mod);
 
     const t = target.result;
     const is_wasm_freestanding = t.cpu.arch.isWasm() and t.os.tag == .freestanding;

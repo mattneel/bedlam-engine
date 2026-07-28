@@ -1,18 +1,21 @@
-//! By convention, root.zig is the root source file when making a package.
+//! Bedlam engine — portable core.
+//!
+//! Everything reachable from here compiles for all six targets in `ARCHITECTURE.md`
+//! §4.1, including freestanding wasm32 and iOS. Nothing here may reference
+//! `std.process`, the OS-backed parts of `std.Io`, or any platform SDK type — §18.9
+//! forbids platform types in portable code, and the `web` and `ios` CI rows are what
+//! enforce it continuously.
+
 const std = @import("std");
-const Io = std.Io;
 
-/// This is a documentation comment to explain the `printAnotherMessage` function below.
-///
-/// Accepting an `Io.Writer` instance is a handy way to write reusable code.
-pub fn printAnotherMessage(writer: *Io.Writer) Io.Writer.Error!void {
-    try writer.print("Run `zig build test` to run the tests.\n", .{});
-}
+pub const schema = @import("bedlam_schema");
+pub const wire = @import("bedlam_wire");
 
-pub fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
+/// Pre-1.0. `ARCHITECTURE.md` §19 states exit criteria rather than versions, so this
+/// tracks milestones and not semver promises.
+pub const version = "0.0.0-M0";
 
-test "basic add functionality" {
-    try std.testing.expect(add(3, 7) == 10);
+test {
+    _ = schema;
+    _ = wire;
 }

@@ -195,39 +195,50 @@ jobs:
           test -n "$fp" || { echo "::error::no fingerprint in manifest"; exit 1; }
 
   # ---------------------------------------------------------------------------
-  # Fuzzing. AGENTS.md §3: "Every parser gets a fuzz target."
+  # Fuzzer canary. AGENTS.md §3: "Every parser gets a fuzz target."
   #
-  # Nightly and on demand, not per-commit — fuzzing runs until it finds something or
-  # you stop it, which is not a gate shape. The per-commit coverage is the
-  # deterministic randomized decode tests in the `test` job.
+  # The target exists (src/wire/root.zig) and CANNOT BE RUN on Zig 0.16.0:
   #
-  # Linux only: `zig build test --fuzz` reports "not yet implemented for windows" on
-  # Zig 0.16, so the primary development machine cannot run this at all. That is the
-  # whole reason it lives here.
+  #   Windows — `zig build test --fuzz` reports "not yet implemented for windows".
+  #   Linux   — fails to build inside Zig's own lib/compiler/test_runner.zig:566,
+  #             passing a *builtin.StackTrace where *const debug.StackTrace is
+  #             expected. Upstream; affects every fuzz target, not just ours.
+  #
+  # AGENTS.md §3 says not to upgrade the compiler as part of an unrelated task, so
+  # the coverage lives in src/wire/property.zig instead — deterministic generators
+  # that run per-commit in the `test` job on every platform.
+  #
+  # This job is therefore a CANARY, not a gate. It is expected to fail today and its
+  # only job is to tell us when upstream starts working, at which point the fuzz
+  # target becomes runnable and this becomes a real job. It never blocks.
   # ---------------------------------------------------------------------------
-  fuzz:
-    name: fuzz
+  fuzz-canary:
+    name: fuzz-canary (expected to fail until upstream is fixed)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      - name: fuzz the wire decoders
+      - name: does --fuzz build yet?
         run: |
           set +e
-          timeout --signal=INT 600 zig build test --fuzz
-          code=$?
+          timeout --signal=INT 600 zig build test --fuzz 2>&1 | tee /tmp/fuzz.log
+          code=${PIPESTATUS[0]}
           set -e
-          # 124 = timeout fired, 130 = SIGINT. Both mean "ran the full window and found
-          # nothing", which is the pass condition. Anything else is a real finding.
-          if [ $code -ne 0 ] && [ $code -ne 124 ] && [ $code -ne 130 ]; then
-            echo "::error::Fuzzer exited $code — it found something. Reproduce with 'zig build test --fuzz'."
-            exit $code
+          if grep -q "test_runner.zig" /tmp/fuzz.log; then
+            echo "::warning::Still blocked upstream on test_runner.zig. Keep using property.zig."
+            exit 1
           fi
-          echo "fuzz window completed with no findings"
+          if [ $code -eq 124 ] || [ $code -eq 130 ] || [ $code -eq 0 ]; then
+            echo "::notice::--fuzz now works. Promote this job to a real gate and drop continue-on-error."
+            exit 0
+          fi
+          echo "::warning::Fuzzer exited $code — investigate whether this is a finding or still the upstream break."
+          exit 1
 
   # ---------------------------------------------------------------------------
   # Hygiene.

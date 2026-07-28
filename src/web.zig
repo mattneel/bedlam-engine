@@ -16,8 +16,18 @@
 //! declarations per §2; this is a placeholder proving the module links and
 //! exports.
 
-const bedlam_engine = @import("bedlam_engine");
+const bedlam = @import("bedlam_engine");
 
-export fn bedlamAdd(a: i32, b: i32) i32 {
-    return bedlam_engine.add(a, b);
+/// Bits a Transform occupies on the wire. Exported so the TypeScript bootstrap can size
+/// its receive buffers from the engine rather than from a duplicated constant — §18.4
+/// forbids duplicated definitions, and a hand-copied number in TypeScript is exactly
+/// that.
+export fn bedlamTransformBits() u32 {
+    return comptime bedlam.wire.codec.componentBits(bedlam.schema.schema.components[0]);
+}
+
+/// Component count in the active schema. A placeholder consumer proving the engine's
+/// comptime schema layer reaches the wasm artifact.
+export fn bedlamComponentCount() u32 {
+    return @intCast(bedlam.schema.manifest.manifest.components.len);
 }

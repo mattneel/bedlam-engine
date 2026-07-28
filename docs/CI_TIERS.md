@@ -138,6 +138,15 @@ Check 5 is structurally guaranteed as well as tested — `wire.Layout` has no pa
 
 **WSL2 is not a Linux measurement target.** WSLg's compositor is a Weston-over-RDP shim rather than a real Wayland session, and audio bridges to the Windows host. The decisive objection is `BENCHMARK_CONTRACT.md` §2.2, which requires every target live *in the same session*: if the Windows client and the Linux client are one physical machine, they are not independent measurements, they contend for one CPU, one GPU, one NIC, and one thermal envelope. WSL2 is fine for development and inadmissible for measurement.
 
+**WSL2 is, however, the local Tier C environment, and some things run nowhere else.** `zig build test --fuzz` reports "not yet implemented for windows" on Zig 0.16, so fuzzing on this machine happens under WSL2 or not at all. `/dev/kvm` is present, which also makes the Android emulator row viable locally when it lands. Build from the WSL2 native filesystem rather than `/mnt/c` — the 9p mount is slow enough to discourage the iteration these tools depend on:
+
+```
+tar --exclude=.zig-cache --exclude=zig-out --exclude=.git -cf - . | (cd ~/bedlam && tar -xf -)
+cd ~/bedlam && zig build test --fuzz
+```
+
+The distinction that matters: **correctness work belongs in WSL2, measurement never does.** Both halves of that follow from the same fact — it shares a machine with the host.
+
 **A flagship Android device is not the reference tier.** `BENCHMARK_CONTRACT.md` §6 pins "mid-tier 2022–2023 SoC … modal device, not flagship" and states that "revising the reference tier upward requires the same review as changing §1's floor. Drifting the reference device is the easiest way to game this contract and it is explicitly forbidden." Measuring on a current flagship and reporting a pass is that drift. A flagship remains valuable as a *development* device — real lifecycle, real device loss, and real cell↔wifi handoff, which is the only way to exercise the `handoff` profile in §5 and the WebTransport migration question in `SPEC_DEFECTS.md` §2.
 
 **Cheapest admissibility in the project:** one used reference-tier Android handset — Adreno 6xx or Mali-G57-class, 6 GB, Android 12+. Required before M1's exit gate, not before M0's.

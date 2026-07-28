@@ -16,6 +16,7 @@ test {
     _ = bits;
     _ = quant;
     _ = codec;
+    _ = @import("property.zig");
 }
 
 const schema = schema_mod.schema;

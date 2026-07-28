@@ -9,10 +9,12 @@ pub const entity = @import("entity.zig");
 pub const chunk = @import("chunk.zig");
 pub const page = @import("page.zig");
 pub const table = @import("table.zig");
+pub const journal = @import("journal.zig");
 
 test {
     _ = entity;
     _ = chunk;
     _ = page;
     _ = table;
+    _ = journal;
 }

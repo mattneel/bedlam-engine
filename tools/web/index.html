@@ -178,6 +178,64 @@ if (typeof OffscreenCanvas === 'undefined' || !canvas.transferControlToOffscreen
   }
 }
 
+// --- M0 criterion 3 on the Web: AudioWorklet ---------------------------------
+//
+// The worklet runs the SAME mixer as the native devices — `src/audio/mixer.zig` compiled
+// into this wasm module — so §17's voice budget, panning and clipping are one
+// implementation rather than four. The page's job is only to build the graph and get the
+// bytes to the worklet.
+
+let audioResult = { supported: false };
+if (typeof AudioContext !== 'undefined' && typeof AudioWorkletNode !== 'undefined') {
+  try {
+    const ctx = new AudioContext({ sampleRate: 48000 });
+    await ctx.audioWorklet.addModule('./audio-worklet.mjs');
+
+    // The bytes are fetched here and transferred, because an AudioWorkletGlobalScope has
+    // no `fetch`. Sending the compiled module instead would be nicer and is not portable.
+    const wasmBytes = await (await fetch('./bedlam_engine.wasm')).arrayBuffer();
+    const node = new AudioWorkletNode(ctx, 'bedlam-mixer', {
+      outputChannelCount: [2],
+      processorOptions: { wasm: wasmBytes },
+    });
+    node.connect(ctx.destination);
+
+    // A context may start suspended without a user gesture. Resuming is allowed to fail —
+    // an autoplay policy is not a bug — and the harness runs Chrome with the policy
+    // relaxed so the path is actually exercised.
+    await ctx.resume().catch(() => {});
+
+    const report = new Promise((resolve) => {
+      node.port.onmessage = (e) => {
+        if (e.data.type === 'report') resolve(e.data);
+        else if (e.data.type === 'failed') resolve({ error: e.data.error });
+      };
+    });
+
+    // Sweep the source while it plays, so the pan path runs rather than only compiling.
+    for (let i = 0; i < 8; i += 1) {
+      node.port.postMessage({ type: 'pan', x: ((i - 4) / 4) * (1 << 24) });
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    node.port.postMessage({ type: 'report' });
+
+    const r = await Promise.race([
+      report,
+      new Promise((res) => setTimeout(() => res({ error: 'no report from worklet' }), 5000)),
+    ]);
+    audioResult = { supported: true, state: ctx.state, ...r };
+    wrow('audio state', ctx.state, ctx.state === 'running' ? 'ok' : 'bad');
+    wrow('audio blocks', `${r.blocks ?? 0} (${r.silentBlocks ?? 0} silent)`,
+         (r.blocks ?? 0) > 0 && (r.silentBlocks ?? 1) === 0 ? 'ok' : 'bad');
+    wrow('audio voices', r.voices ?? 0, (r.voices ?? 0) > 0 ? 'ok' : 'bad');
+  } catch (e) {
+    audioResult = { supported: true, error: String(e) };
+    wrow('audio', String(e), 'bad');
+  }
+} else {
+  wrow('AudioWorklet', 'unsupported', 'bad');
+}
+
 // A single machine-readable line for the headless harness. `--dump-dom` gives the DOM and
 // nothing else, so the verdict has to live IN the DOM rather than in the console.
 const w = window.__bedlam_worker;
@@ -185,6 +243,7 @@ document.title = 'bedlam-result ' + JSON.stringify({
   isolated: crossOriginIsolated,
   digest: b.digest(),
   worker: w,
+  audio: audioResult,
 });
 document.body.insertAdjacentHTML('beforeend',
   `<pre id="bedlam-result">${document.title}</pre>`);

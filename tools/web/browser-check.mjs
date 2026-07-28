@@ -108,6 +108,10 @@ function runChrome(chrome, url) {
     '--disable-dev-shm-usage',
     '--no-first-run',
     '--disable-extensions',
+    // Without this an AudioContext stays suspended until a user gesture, and a headless
+    // run has no user — the worklet would never be asked for a quantum and criterion 3
+    // would report "unsupported" on a browser that supports it perfectly well.
+    '--autoplay-policy=no-user-gesture-required',
     `--user-data-dir=${join(root, '.chrome-profile')}`,
     url,
   ];
@@ -181,6 +185,23 @@ try {
     check('worker == main thread', r.worker.agrees === true, r.worker.digest);
   }
 
+  // Criterion 3 on the Web. The worklet runs the same mixer as the native devices, so what
+  // is verified here is the DEVICE: a real graph, a real 128-frame quantum, and audio that
+  // is actually non-silent. "The worklet ran" and "the worklet produced audio" are
+  // different claims and only the second one is the criterion.
+  const au = r.audio ?? {};
+  if (!au.supported) {
+    check('AudioWorklet', false, 'unsupported in this browser');
+  } else if (au.error) {
+    check('audio worklet', false, au.error);
+  } else {
+    check('audio context running', au.state === 'running', String(au.state));
+    check('worklet rendered blocks', (au.blocks ?? 0) > 0, `${au.blocks} blocks`);
+    check('no silent blocks', (au.silentBlocks ?? 1) === 0, `${au.silentBlocks} silent`);
+    check('voice active in worklet', (au.voices ?? 0) > 0, String(au.voices));
+    check('mix did not clip', (au.clipped ?? 1) === 0, String(au.clipped));
+  }
+
   const bin = process.argv[2];
   if (bin) {
     const nd = await nativeDigest(bin);
@@ -190,7 +211,9 @@ try {
   }
 
   console.log('');
-  console.log(failed ? 'browser check FAILED' : 'Worker + OffscreenCanvas verified in a real browser.');
+  console.log(failed
+    ? 'browser check FAILED'
+    : 'Web target verified in a real browser: worker, canvas, input, audio worklet.');
 } catch (e) {
   console.error(`browser check FAILED: ${e.message}`);
   failed = true;

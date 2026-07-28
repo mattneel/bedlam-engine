@@ -181,9 +181,19 @@ The harness is verified to be able to fail: a system with a genuine read-write d
   OK   worker drew frames           16 frames
   OK   worker ticks                 128
   OK   worker live entities         64
+  OK   input reached the worker     keys=8 text=4 wheel=1
   OK   worker == main thread        c52a5efc…
+  OK   audio context running        running
+  OK   worklet rendered blocks      57 blocks
+  OK   no silent blocks             0 silent
   OK   browser == native            c52a5efc…
   ```
+
+  The AudioWorklet runs the **same mixer** as the WASAPI and PulseAudio devices —
+  `src/audio/mixer.zig` compiled into the same wasm module — rather than a JavaScript
+  reimplementation. §17's voice budget, panning and clipping are one implementation,
+  already verified on s390x and mips by the cross gate, which is not a claim any JS mixer
+  could make.
 
   The harness waits for the page to **POST** its verdict rather than scraping `--dump-dom` under `--virtual-time-budget`: virtual time does not fast-forward timers inside a *worker*, so a DOM scrape captures the page mid-run and reports the harness's own impatience as a failure.
 

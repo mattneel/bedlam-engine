@@ -92,9 +92,20 @@ pub fn Chunk(comptime Columns: type, comptime budget: Budget) type {
             break :blk @Struct(.auto, null, &names, &types, &@splat(.{}));
         };
 
+        /// Fully zeroed, including the columns beyond `len`.
+        ///
+        /// `undefined` here would be cheaper and is wrong. The rollback projection copies
+        /// *whole pages* (§5.2), not just the live prefix, so uninitialized tail bytes
+        /// ride into a snapshot and two hosts holding identical logical worlds hash
+        /// differently. That is indistinguishable from a desync and impossible to
+        /// attribute.
+        ///
+        /// Found by CI: the canonical-tail tests passed on Windows and failed on Linux,
+        /// which is what a dependence on uninitialized memory looks like from the outside.
+        /// `Entity.none` is all-zero bits, so the entity column agrees with this.
         pub const init: Self = .{
             .entities = @splat(Entity.none),
-            .columns = undefined,
+            .columns = std.mem.zeroes(ColumnArrays),
             .len = 0,
         };
 
@@ -278,6 +289,18 @@ test "add-then-remove is byte-identical to never-added" {
     try std.testing.expectEqualSlices(Entity, &a.entities, &b.entities);
     try std.testing.expectEqual(a.len, b.len);
     try std.testing.expectEqualSlices(u16, &a.columns.health, &b.columns.health);
+}
+
+test "a fresh chunk is entirely zero, tail included" {
+    // The invariant the two canonicality tests depend on. Stated directly so a future
+    // change to `init` fails here, naming the cause, rather than failing there with a
+    // 2 KiB slice diff.
+    const c = TestChunk.init;
+    for (c.entities) |e| try std.testing.expect(e.isNone());
+    for (c.columns.health) |h| try std.testing.expectEqual(@as(u16, 0), h);
+    for (c.columns.position) |p| {
+        for (p) |axis| try std.testing.expectEqual(@as(i64, 0), axis.raw);
+    }
 }
 
 test "a chunk fits its budget" {

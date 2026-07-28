@@ -195,50 +195,50 @@ jobs:
           test -n "$fp" || { echo "::error::no fingerprint in manifest"; exit 1; }
 
   # ---------------------------------------------------------------------------
-  # Fuzzer canary. AGENTS.md §3: "Every parser gets a fuzz target."
+  # Fuzzing. AGENTS.md §3: "Every parser gets a fuzz target."
   #
-  # The target exists (src/wire/root.zig) and CANNOT BE RUN on Zig 0.16.0:
+  # `--release=safe` is REQUIRED, not a tuning choice. In Debug, Zig 0.16.0 fails to
+  # build its own lib/compiler/test_runner.zig:566 (passes a *builtin.StackTrace
+  # where *const debug.StackTrace is expected) — upstream, and it breaks every fuzz
+  # target. ReleaseSafe is also the mode AGENTS.md §3 assigns to packet parse, so
+  # this exercises the configuration that ships rather than one nobody deploys.
   #
-  #   Windows — `zig build test --fuzz` reports "not yet implemented for windows".
-  #   Linux   — fails to build inside Zig's own lib/compiler/test_runner.zig:566,
-  #             passing a *builtin.StackTrace where *const debug.StackTrace is
-  #             expected. Upstream; affects every fuzz target, not just ours.
+  # Linux only: Windows reports "not yet implemented for windows" in any mode.
+  # Locally that means WSL2 — docs/CI_TIERS.md §5.
   #
-  # AGENTS.md §3 says not to upgrade the compiler as part of an unrelated task, so
-  # the coverage lives in src/wire/property.zig instead — deterministic generators
-  # that run per-commit in the `test` job on every platform.
-  #
-  # This job is therefore a CANARY, not a gate. It is expected to fail today and its
-  # only job is to tell us when upstream starts working, at which point the fuzz
-  # target becomes runnable and this becomes a real job. It never blocks.
+  # Nightly and on demand rather than per-commit: fuzzing runs until it finds
+  # something or you stop it, which is not a gate shape. Per-commit coverage is the
+  # deterministic generators in src/wire/property.zig, which run in the `test` job
+  # on every target.
   # ---------------------------------------------------------------------------
-  fuzz-canary:
-    name: fuzz-canary (expected to fail until upstream is fixed)
+  fuzz:
+    name: fuzz
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      - name: does --fuzz build yet?
+      - name: fuzz the wire decoders
         run: |
           set +e
-          timeout --signal=INT 600 zig build test --fuzz 2>&1 | tee /tmp/fuzz.log
+          timeout --signal=INT 900 zig build test --fuzz --release=safe 2>&1 | tee /tmp/fuzz.log
           code=${PIPESTATUS[0]}
           set -e
+          # Guard against the upstream break silently reappearing and being read as a pass.
           if grep -q "test_runner.zig" /tmp/fuzz.log; then
-            echo "::warning::Still blocked upstream on test_runner.zig. Keep using property.zig."
+            echo "::error::Fuzzer failed to build in Zig's test_runner — the upstream Debug break has reached ReleaseSafe."
             exit 1
           fi
-          if [ $code -eq 124 ] || [ $code -eq 130 ] || [ $code -eq 0 ]; then
-            echo "::notice::--fuzz now works. Promote this job to a real gate and drop continue-on-error."
-            exit 0
+          # 124 = timeout fired, 130 = SIGINT. Both mean the full window ran with no
+          # finding, which is the pass condition. Anything else is a finding.
+          if [ $code -ne 0 ] && [ $code -ne 124 ] && [ $code -ne 130 ]; then
+            echo "::error::Fuzzer exited $code — reproduce with 'zig build test --fuzz --release=safe'."
+            exit $code
           fi
-          echo "::warning::Fuzzer exited $code — investigate whether this is a finding or still the upstream break."
-          exit 1
+          echo "fuzz window completed with no findings"
 
   # ---------------------------------------------------------------------------
   # Hygiene.

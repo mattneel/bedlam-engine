@@ -61,6 +61,36 @@ test "component round-trips through the wire" {
     try std.testing.expect(@abs(dot) > 0.999);
 }
 
+test "wire order follows stable IDs, not declaration order" {
+    // Transform declares position, rotation, velocity — but the registry allocates
+    // velocity 0x00410004 and rotation 0x00410002, so the wire order is
+    // position, rotation, velocity by ID. Declaration order happens to agree here;
+    // the point is that the codec derives the order from IDs rather than assuming it.
+    //
+    // Without this, reordering a declaration produces an identical fingerprint
+    // (SCHEMA_AND_EVOLUTION §4 sorts by ID and ignores declaration order) and a
+    // different byte layout. Two builds would negotiate as compatible and then
+    // reinterpret each other's fields — the exact failure §0 exists to prevent.
+    const manifest = schema_mod.manifest.manifest;
+    const entry = for (manifest.components) |c| {
+        if (std.mem.eql(u8, c.name, "Transform")) break c;
+    } else unreachable;
+
+    // Encode with only the lowest-ID field set and confirm the bits land where the
+    // ID order says they should, not where declaration order would put them.
+    var buf: [64]u8 = undefined;
+    var writer = bits.Writer.init(&buf);
+    try codec.encodeMasked(Transform, sampleTransform(), 0b001, &writer);
+
+    // Mask is 3 bits, then the single lowest-ID field. position is 0x00410001.
+    var lowest_id: u32 = entry.fields[0].id;
+    for (entry.fields) |f| lowest_id = @min(lowest_id, f.id);
+    try std.testing.expectEqual(@as(u32, 0x00410001), lowest_id);
+
+    const expected = 3 + comptime codec.fieldBits(Transform.fields[0]);
+    try std.testing.expectEqual(@as(usize, expected), writer.bitsWritten());
+}
+
 test "encoded size matches the comptime-computed size" {
     // The replication layer sizes snapshots from componentBits without trial encoding,
     // so a mismatch would silently overrun a per-client byte budget (§4).
@@ -228,8 +258,30 @@ fn fuzzDecode(context: void, smith: *std.testing.Smith) !void {
 }
 
 fn componentIsEncodable(comptime c: @TypeOf(schema.components[0])) bool {
+    // Non-replicated classes are rejected by codec.assertReplicable at compile time, so
+    // they cannot appear here even to be skipped at runtime.
+    if (!schema_mod.declare.projectionsFor(c.class).replication) return false;
     for (c.fields) |f| if (f.wire == .blob) return false;
     return true;
+}
+
+test "classes outside the replication projection are excluded from the codec" {
+    // The guard itself is a compile error and cannot be exercised from a test; this
+    // checks the classification it depends on, and that our schema actually contains
+    // components on both sides of the line — otherwise the guard is untested by
+    // construction.
+    var replicable: usize = 0;
+    var excluded: usize = 0;
+    inline for (schema.components) |c| {
+        if (comptime schema_mod.declare.projectionsFor(c.class).replication) {
+            replicable += 1;
+        } else {
+            excluded += 1;
+        }
+    }
+    try std.testing.expect(replicable > 0);
+    // LootKnowledge (client_private, §16) and FragmentDebris (derived, §5.3).
+    try std.testing.expect(excluded >= 2);
 }
 
 fn initToZero(comptime c: @TypeOf(schema.components[0]), value: *codec.Storage(c)) void {

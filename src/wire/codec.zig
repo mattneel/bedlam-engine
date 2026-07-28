@@ -113,6 +113,49 @@ pub fn componentBits(comptime c: d.Component) usize {
     }
 }
 
+/// Declaration indices ordered by stable field ID.
+///
+/// `ARCHITECTURE.md` §5.1 requires "stable field ordering" in the replication projection,
+/// and this is why. The compatibility fingerprint (`SCHEMA_AND_EVOLUTION.md` §4) is sorted
+/// by stable ID and is deliberately blind to declaration order, because §2 says a rename
+/// or a reshuffle preserves identity. If the wire followed declaration order instead,
+/// moving one field in `schema.zig` would produce an identical fingerprint and a different
+/// byte layout — two builds would negotiate as compatible and then reinterpret each
+/// other's fields.
+///
+/// That is exactly the silent, data-corrupting, discovered-in-production failure
+/// `SCHEMA_AND_EVOLUTION.md` §0 describes. So the wire follows stable IDs, and declaration
+/// order becomes what §4 says it is: cosmetic.
+fn wireOrder(comptime c: d.Component) [c.fields.len]usize {
+    comptime {
+        const m = schema_mod.manifest.manifest;
+
+        var entry: ?@TypeOf(m.components[0]) = null;
+        for (m.components) |ce| {
+            if (std.mem.eql(u8, ce.name, c.name)) {
+                entry = ce;
+                break;
+            }
+        }
+        const ce = entry orelse
+            @compileError("codec: component '" ++ c.name ++ "' is absent from the manifest");
+
+        var order: [c.fields.len]usize = undefined;
+        for (0..c.fields.len) |i| order[i] = i;
+
+        // Insertion sort by stable ID. n is small and this runs once per component.
+        for (1..c.fields.len) |i| {
+            var j = i;
+            while (j > 0 and ce.fields[order[j - 1]].id > ce.fields[order[j]].id) : (j -= 1) {
+                const tmp = order[j - 1];
+                order[j - 1] = order[j];
+                order[j] = tmp;
+            }
+        }
+        return order;
+    }
+}
+
 fn encodeField(comptime f: d.Field, value: anytype, writer: *bits.Writer) bits.Writer.Error!void {
     const n = comptime fieldBits(f);
     switch (f.wire) {
@@ -181,10 +224,35 @@ fn decodeField(comptime f: d.Field, reader: *bits.Reader) bits.Reader.Error!Stor
     };
 }
 
+/// Components this codec may serialize.
+///
+/// `ARCHITECTURE.md` §5.1 defines four projections that are deliberately NOT the same
+/// bytes; this file is the *replication* codec and nothing else. Without the check
+/// below, `encode` would happily serialize a `client_private` component — and §16 says
+/// that class exists precisely so "the client is never sent information it should not
+/// have. Information never received cannot be extracted." A codec that will encode it on
+/// request turns an anti-cheat guarantee into a convention.
+///
+/// `derived` is rejected for the same structural reason `SCHEMA_AND_EVOLUTION.md` §10
+/// check 10 rejects it in the manifest: replicating 16,384 fragments is the thing the
+/// class exists to avoid.
+fn assertReplicable(comptime c: d.Component) void {
+    comptime {
+        if (!d.projectionsFor(c.class).replication) {
+            @compileError("codec: component '" ++ c.name ++ "' is class '" ++ @tagName(c.class) ++
+                "', which is not in the replication projection (ARCHITECTURE.md §5.1). " ++
+                "This is the replication codec; save and replay are different projections " ++
+                "with different representations and §18.7 forbids unifying them.");
+        }
+    }
+}
+
 /// Encode every field. Full-state encode; delta against an acked baseline is §9.4 and
 /// builds on this.
 pub fn encode(comptime c: d.Component, value: Storage(c), writer: *bits.Writer) bits.Writer.Error!void {
-    inline for (c.fields) |f| {
+    comptime assertReplicable(c);
+    inline for (comptime wireOrder(c)) |i| {
+        const f = c.fields[i];
         try encodeField(f, @field(value, f.name), writer);
     }
 }
@@ -195,8 +263,10 @@ pub fn encode(comptime c: d.Component, value: Storage(c), writer: *bits.Writer) 
 /// this panic, read out of bounds, or loop — the widths are comptime constants and the
 /// reader is bounds-checked, so the only failure is running out of bits.
 pub fn decode(comptime c: d.Component, reader: *bits.Reader) bits.Reader.Error!Storage(c) {
+    comptime assertReplicable(c);
     var out: Storage(c) = undefined;
-    inline for (c.fields) |f| {
+    inline for (comptime wireOrder(c)) |i| {
+        const f = c.fields[i];
         @field(out, f.name) = try decodeField(f, reader);
     }
     return out;
@@ -213,10 +283,14 @@ pub fn encodeMasked(
     field_mask: u32,
     writer: *bits.Writer,
 ) bits.Writer.Error!void {
+    comptime assertReplicable(c);
     comptime std.debug.assert(c.fields.len <= 32);
+    // Mask bits are indexed by wire order, not declaration order, for the same reason
+    // the fields themselves are — see wireOrder.
     try writer.writeBits(field_mask, @intCast(c.fields.len));
-    inline for (c.fields, 0..) |f, i| {
-        if (field_mask & (@as(u32, 1) << @intCast(i)) != 0) {
+    inline for (comptime wireOrder(c), 0..) |field_index, bit| {
+        if (field_mask & (@as(u32, 1) << @intCast(bit)) != 0) {
+            const f = c.fields[field_index];
             try encodeField(f, @field(value, f.name), writer);
         }
     }
@@ -228,11 +302,13 @@ pub fn decodeMasked(
     baseline: Storage(c),
     reader: *bits.Reader,
 ) bits.Reader.Error!Storage(c) {
+    comptime assertReplicable(c);
     comptime std.debug.assert(c.fields.len <= 32);
     var out = baseline;
     const field_mask: u32 = @intCast(try reader.readBits(@intCast(c.fields.len)));
-    inline for (c.fields, 0..) |f, i| {
-        if (field_mask & (@as(u32, 1) << @intCast(i)) != 0) {
+    inline for (comptime wireOrder(c), 0..) |field_index, bit| {
+        if (field_mask & (@as(u32, 1) << @intCast(bit)) != 0) {
+            const f = c.fields[field_index];
             @field(out, f.name) = try decodeField(f, reader);
         }
     }

@@ -1,22 +1,24 @@
 //! Deterministic property testing for the decode path.
 //!
-//! `AGENTS.md` §3 requires every parser to have a fuzz target. It has one
-//! (`root.zig`, via `std.testing.fuzz`), and on Zig 0.16.0 that target **cannot be
-//! run**:
+//! `AGENTS.md` §3 requires every parser to have a fuzz target. It has one (`root.zig`,
+//! via `std.testing.fuzz`), and that target runs — but only as
+//! **`zig build test --fuzz --release=safe`**, on Linux.
 //!
-//!   - On Windows, `zig build test --fuzz` reports "not yet implemented for windows".
-//!   - On Linux, it fails to build inside Zig's own `lib/compiler/test_runner.zig:566`,
+//!   - Debug fails to build inside Zig 0.16.0's own `lib/compiler/test_runner.zig:566`,
 //!     which passes a `*builtin.StackTrace` where `*const debug.StackTrace` is expected.
-//!     That is upstream and affects every fuzz target, not just ours.
+//!     Upstream, and it affects every fuzz target rather than anything here.
+//!   - Windows reports "not yet implemented for windows" in any mode, so locally this
+//!     runs under WSL2 — `docs/CI_TIERS.md` §5.
 //!
-//! `AGENTS.md` §3 also says not to upgrade the compiler as part of an unrelated task, so
-//! the answer is not to bump Zig — it is to get the coverage another way and keep the
-//! fuzz target for when the toolchain is fixed.
+//! ReleaseSafe is the right mode regardless: `AGENTS.md` §3 puts packet parse in
+//! `ReleaseSafe`, so fuzzing there exercises the configuration that actually ships
+//! rather than a Debug build nobody deploys.
 //!
-//! This harness is that other way, and it is better than a coverage-guided fuzzer in one
-//! specific respect: it is **deterministic**. A CI failure here reproduces exactly from
-//! the seed, on every platform, forever. It is worse in the obvious respect — it does not
-//! learn — which is why the fuzz target stays.
+//! This harness complements the fuzzer rather than substituting for it, and it is better
+//! in one specific respect: it is **deterministic**. A CI failure here reproduces exactly
+//! from its seed, on every platform, forever, with no corpus to carry around. It is worse
+//! in the obvious respect — it does not learn — which is why both exist. This one gates
+//! every commit on every target; the fuzzer runs nightly on Linux.
 //!
 //! Three generators, because uniform random bytes are a weak adversary. Most random bit
 //! strings are not near an interesting boundary; mutations of *valid* encodings are.

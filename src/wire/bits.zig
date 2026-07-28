@@ -97,7 +97,12 @@ pub const Reader = struct {
     /// A reader over the next `bits` bits only, advancing the parent past them.
     /// The child cannot read beyond its grant even if it is buggy or hostile.
     pub fn subReader(self: *Reader, bits: usize) Error!Reader {
-        if (self.bit_pos + bits > self.bit_limit) return error.EndOfStream;
+        // Subtract rather than add. `bit_pos + bits` overflows usize for a large enough
+        // attacker-supplied length, which in ReleaseSafe is a panic — and this is the one
+        // reader API taking an unbounded count, so it is the only place the arithmetic can
+        // be driven there. `bit_limit >= bit_pos` always holds, so the subtraction cannot
+        // underflow.
+        if (bits > self.bit_limit - self.bit_pos) return error.EndOfStream;
         const child: Reader = .{
             .buf = self.buf,
             .bit_pos = self.bit_pos,
@@ -198,6 +203,17 @@ test "a sub-reader larger than the remaining input is refused at grant time" {
     var buf = [_]u8{0x01};
     var parent = Reader.init(&buf);
     try std.testing.expectError(error.EndOfStream, parent.subReader(9));
+}
+
+test "a sub-reader length near usize max is refused rather than overflowing" {
+    // subReader is the only reader API taking an unbounded count, so it is the only
+    // place a hostile length can drive the bounds arithmetic into an overflow panic.
+    var buf = [_]u8{ 0x01, 0x02 };
+    var parent = Reader.init(&buf);
+    try std.testing.expectError(error.EndOfStream, parent.subReader(std.math.maxInt(usize)));
+    try std.testing.expectError(error.EndOfStream, parent.subReader(std.math.maxInt(usize) - 3));
+    // And the parent is undamaged: a refused grant must not advance the cursor.
+    try std.testing.expectEqual(@as(u64, 0x01), try parent.readBits(8));
 }
 
 test "trailing padding bits are zero" {

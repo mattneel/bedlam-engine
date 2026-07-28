@@ -142,8 +142,10 @@ Check 5 is structurally guaranteed as well as tested — `wire.Layout` has no pa
 
 ```
 tar --exclude=.zig-cache --exclude=zig-out --exclude=.git -cf - . | (cd ~/bedlam && tar -xf -)
-cd ~/bedlam && zig build test --fuzz
+cd ~/bedlam && zig build test --fuzz --release=safe
 ```
+
+**`--release=safe` is required, not optional.** In Debug, Zig 0.16.0 fails to compile its own `lib/compiler/test_runner.zig:566` — it passes a `*builtin.StackTrace` where `*const debug.StackTrace` is expected — which breaks every fuzz target, not just this project's. ReleaseSafe builds and runs cleanly, and is independently the correct mode: `AGENTS.md` §3 assigns packet parse to `ReleaseSafe`, so fuzzing there exercises the configuration that ships.
 
 The distinction that matters: **correctness work belongs in WSL2, measurement never does.** Both halves of that follow from the same fact — it shares a machine with the host.
 

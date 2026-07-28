@@ -11,11 +11,13 @@ const schema_mod = @import("bedlam_schema");
 
 pub const bits = @import("bits.zig");
 pub const quant = @import("quant.zig");
+pub const fixedquant = @import("fixedquant.zig");
 pub const codec = @import("codec.zig");
 
 test {
     _ = bits;
     _ = quant;
+    _ = fixedquant;
     _ = codec;
     _ = @import("property.zig");
 }
@@ -24,12 +26,19 @@ const schema = schema_mod.schema;
 const Transform = schema.components[0];
 const Health = schema.components[1];
 
+const F = fpz.Fixed;
+
 fn sampleTransform() codec.Storage(Transform) {
     return .{
-        .position = .{ 12.5, -300.25, 4095.0 },
-        .rotation = .{ 0.5, 0.5, 0.5, 0.5 },
-        .velocity = .{ 1.5, -2.5, 0.0 },
+        .position = .{ F.rconst(12.5), F.rconst(-300.25), F.rconst(4095.0) },
+        .rotation = .{ F.rconst(0.5), F.rconst(0.5), F.rconst(0.5), F.rconst(0.5) },
+        .velocity = .{ F.rconst(1.5), F.rconst(-2.5), F.ZERO },
     };
+}
+
+/// Raw-unit difference, so comparisons stay integer-only like the code under test.
+fn rawDelta(a: F, b: F) i64 {
+    return if (a.raw > b.raw) a.raw - b.raw else b.raw - a.raw;
 }
 
 test "generated storage type matches the declaration" {
@@ -37,8 +46,11 @@ test "generated storage type matches the declaration" {
     const info = @typeInfo(T).@"struct";
     try std.testing.expectEqual(@as(usize, 3), info.fields.len);
     try std.testing.expectEqualStrings("position", info.fields[0].name);
-    try std.testing.expectEqual([3]f32, info.fields[0].type);
-    try std.testing.expectEqual([4]f32, info.fields[1].type);
+    // Storage follows the SEMANTIC type. Transform is `.predicted`, so it enters the
+    // rollback projection and ARCHITECTURE.md §7 requires fixed point — deriving storage
+    // from the wire type gave it [3]f32 and put floats inside the rollback boundary.
+    try std.testing.expectEqual([3]fpz.Fixed, info.fields[0].type);
+    try std.testing.expectEqual([4]fpz.Fixed, info.fields[1].type);
 }
 
 test "component round-trips through the wire" {
@@ -52,14 +64,17 @@ test "component round-trips through the wire" {
     const decoded = try codec.decode(Transform, &reader);
 
     // Position: 16 bits over [-4096, 4096].
-    const pos_tol = quant.resolution(16, -4096, 4096) * 1.001;
+    const pos_tol = fixedquant.resolutionRaw(16, F.rconst(-4096), F.rconst(4096));
     inline for (0..3) |i| {
-        try std.testing.expectApproxEqAbs(original.position[i], decoded.position[i], pos_tol);
+        try std.testing.expect(rawDelta(original.position[i], decoded.position[i]) <= pos_tol);
     }
 
-    var dot: f32 = 0;
-    inline for (0..4) |i| dot += original.rotation[i] * decoded.rotation[i];
-    try std.testing.expect(@abs(dot) > 0.999);
+    // |dot| == 1 for the same rotation, sign irrelevant.
+    var dot: i128 = 0;
+    inline for (0..4) |i| dot += @as(i128, original.rotation[i].raw) * @as(i128, decoded.rotation[i].raw);
+    const one_sq: i128 = @as(i128, F.ONE.raw) * @as(i128, F.ONE.raw);
+    const abs_dot = if (dot < 0) -dot else dot;
+    try std.testing.expect(abs_dot > @divTrunc(one_sq * 99, 100));
 }
 
 test "wire order follows stable IDs, not declaration order" {
@@ -115,7 +130,6 @@ test "narrowing to the wire is total and saturating" {
     // illegal behaviour out of range and made x86_64 disagree with aarch64 and wasm32 in
     // SIGN. fpz removes that class entirely — it is integer-only at runtime — but the
     // narrowing from Q40.24 to the 32-bit wire form is ours, so it is tested here.
-    const F = codec.Fixed;
     const W = codec.WireFixed;
 
     // In range: exact through narrow/widen, since only the low 8 frac bits are dropped.
@@ -136,7 +150,6 @@ test "fpz is integer-only, so there is no float conversion to diverge on" {
     // ARCHITECTURE.md §7's actual requirement. Constants are folded at comptime; the
     // runtime path never touches a float, which is why this type can cross the rollback
     // boundary at all.
-    const F = codec.Fixed;
     try std.testing.expectEqual(@as(i64, 1 << 24), F.ONE.raw);
     try std.testing.expectEqual(F.fromInt(3).raw, F.add(F.ONE, F.fromInt(2)).raw);
     try std.testing.expectEqual(F.fromInt(6).raw, F.mul(F.fromInt(2), F.fromInt(3)).raw);
@@ -147,7 +160,7 @@ test "fixed-point survives the wire exactly" {
     // exact — a lossy round trip there is a desync, not a visual artifact.
     var buf: [16]u8 = undefined;
     const original: codec.Storage(Health) = .{
-        .current = fpz.Fixed.rconst(87.25),
+        .current = F.rconst(87.25),
         .maximum = 100,
     };
 
@@ -164,7 +177,7 @@ test "masked update leaves untouched fields at their baseline" {
     var buf: [64]u8 = undefined;
     const baseline = sampleTransform();
     var updated = baseline;
-    updated.position = .{ 99.0, 99.0, 99.0 };
+    updated.position = .{ F.rconst(99.0), F.rconst(99.0), F.rconst(99.0) };
 
     // Field 0 (position) only.
     var writer = bits.Writer.init(&buf);
@@ -173,10 +186,10 @@ test "masked update leaves untouched fields at their baseline" {
     var reader = bits.Reader.init(writer.written());
     const decoded = try codec.decodeMasked(Transform, baseline, &reader);
 
-    const pos_tol = quant.resolution(16, -4096, 4096) * 1.001;
-    try std.testing.expectApproxEqAbs(@as(f32, 99.0), decoded.position[0], pos_tol);
+    const pos_tol = fixedquant.resolutionRaw(16, F.rconst(-4096), F.rconst(4096));
+    try std.testing.expect(rawDelta(F.rconst(99.0), decoded.position[0]) <= pos_tol);
     // Velocity was not sent, so it must be exactly the baseline value, not a re-decode.
-    try std.testing.expectEqual(baseline.velocity[0], decoded.velocity[0]);
+    try std.testing.expectEqual(baseline.velocity[0].raw, decoded.velocity[0].raw);
 }
 
 test "a masked update is smaller than a full one" {
@@ -219,14 +232,12 @@ test "decode never rejects well-formed random bytes" {
         var reader = bits.Reader.init(buf[0..needed]);
         const decoded = try codec.decode(Transform, &reader);
 
-        // And whatever comes out must still be usable: a unit quaternion, never NaN.
-        var norm: f32 = 0;
-        for (decoded.rotation) |c| {
-            try std.testing.expect(!std.math.isNan(c));
-            norm += c * c;
-        }
-        try std.testing.expectApproxEqAbs(@as(f32, 1.0), norm, 0.02);
-        for (decoded.position) |c| try std.testing.expect(!std.math.isNan(c));
+        // And whatever comes out must still be usable: a unit rotation.
+        var norm: i128 = 0;
+        for (decoded.rotation) |c| norm += @as(i128, c.raw) * @as(i128, c.raw);
+        const unit_sq: i128 = @as(i128, F.ONE.raw) * @as(i128, F.ONE.raw);
+        try std.testing.expect(norm > @divTrunc(unit_sq * 96, 100));
+        try std.testing.expect(norm < @divTrunc(unit_sq * 104, 100));
     }
 }
 
@@ -273,15 +284,14 @@ fn fuzzDecode(context: void, smith: *std.testing.Smith) !void {
         error.EndOfStream, error.Malformed => return,
     };
 
-    for (decoded.position) |c| if (std.math.isNan(c)) return error.DecodedNaN;
-    for (decoded.velocity) |c| if (std.math.isNan(c)) return error.DecodedNaN;
-
-    var norm: f32 = 0;
-    for (decoded.rotation) |c| {
-        if (std.math.isNan(c)) return error.DecodedNaN;
-        norm += c * c;
+    // No NaN check: storage is fpz.Fixed, so NaN is not representable. The failure class
+    // was removed by the type rather than by a guard.
+    var norm: i128 = 0;
+    for (decoded.rotation) |c| norm += @as(i128, c.raw) * @as(i128, c.raw);
+    const unit_sq: i128 = @as(i128, F.ONE.raw) * @as(i128, F.ONE.raw);
+    if (norm < @divTrunc(unit_sq * 96, 100) or norm > @divTrunc(unit_sq * 104, 100)) {
+        return error.DecodedNonRotation;
     }
-    if (@abs(norm - 1.0) > 0.01) return error.DecodedNonRotation;
 
     // A decoded value must survive re-encoding: relays, replays, and host migration all
     // round-trip peer-supplied state through our own encoder.
@@ -294,7 +304,7 @@ fn componentIsEncodable(comptime c: @TypeOf(schema.components[0])) bool {
     // Non-replicated classes are rejected by codec.assertReplicable at compile time, so
     // they cannot appear here even to be skipped at runtime.
     if (!schema_mod.declare.projectionsFor(c.class).replication) return false;
-    for (c.fields) |f| if (f.wire == .blob) return false;
+    for (c.fields) |f| if (f.sem == .blob) return false;
     return true;
 }
 
@@ -319,14 +329,14 @@ test "classes outside the replication projection are excluded from the codec" {
 
 fn initToZero(comptime c: @TypeOf(schema.components[0]), value: *codec.Storage(c)) void {
     inline for (c.fields) |f| {
-        @field(value, f.name) = switch (f.wire) {
+        @field(value, f.name) = switch (f.sem) {
             .bool => false,
             .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .string_id => 0,
             .f32, .f64 => 0.0,
-            .q16_16 => codec.Fixed.ZERO,
-            .vec3_quantized => [3]f32{ 0, 0, 0 },
+            .fixed => codec.Fixed.ZERO,
+            .fixed_vec3 => [3]fpz.Fixed{ fpz.Fixed.ZERO, fpz.Fixed.ZERO, fpz.Fixed.ZERO },
             // Must be a unit quaternion: encode asserts it.
-            .quat_smallest_three => [4]f32{ 1, 0, 0, 0 },
+            .fixed_quat => [4]fpz.Fixed{ fpz.Fixed.ONE, fpz.Fixed.ZERO, fpz.Fixed.ZERO, fpz.Fixed.ZERO },
             .entity_handle => codec.EntityHandle{ .index = 0, .generation = 0 },
             .blob => unreachable,
         };

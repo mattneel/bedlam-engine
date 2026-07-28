@@ -12,6 +12,8 @@
 
 const std = @import("std");
 const wire = @import("wire.zig");
+const semantic = @import("semantic.zig");
+pub const SemanticType = semantic.SemanticType;
 
 /// `ARCHITECTURE.md` §5.3.
 pub const Class = enum {
@@ -51,10 +53,13 @@ pub const Channel = enum {
 };
 
 pub const Field = struct {
-    /// Sentinel-terminated because `wire/codec.zig` uses it as a `@Type` struct field
-    /// name when generating storage types. String literals coerce; this costs nothing
-    /// and keeps the codec from having to re-terminate every name at comptime.
+    /// Sentinel-terminated because `wire/codec.zig` uses it as a `@Struct` field name
+    /// when generating storage types. String literals coerce; this costs nothing and
+    /// keeps the codec from having to re-terminate every name at comptime.
     name: [:0]const u8,
+    /// What the simulation holds. Decides storage.
+    sem: SemanticType,
+    /// How it crosses the network. Decides encoding.
     wire: wire.WireType,
     quant: wire.Quantization = .none,
     /// Feeds the §9.4 priority accumulators.
@@ -136,6 +141,44 @@ pub fn scriptMayWrite(class: Class) bool {
         .predicted, .interpolated, .replicated, .deterministic => false,
         .client_private, .transient_presentation, .derived => false,
     };
+}
+
+/// `ARCHITECTURE.md` §7: fixed point inside the rollback boundary.
+///
+/// The classes that enter the rollback projection are the ones a client re-simulates, so
+/// their values must be reproducible bit-for-bit on x86, ARM and wasm32. §7 calls
+/// cross-architecture float determinism folklore and says not to design around it — this
+/// makes that a build failure rather than a reading-comprehension exercise.
+///
+/// Deliberately keyed on the projection rather than on a list of class names: if
+/// `projectionsFor` ever admits another class to rollback, this follows automatically.
+pub fn assertRollbackSafe(comptime c: Component) void {
+    comptime {
+        if (!projectionsFor(c.class).rollback) return;
+        for (c.fields) |f| {
+            if (f.sem.isFloat()) {
+                @compileError("component '" ++ c.name ++ "' is class '" ++ @tagName(c.class) ++
+                    "', which enters the rollback projection, but field '" ++ f.name ++
+                    "' has semantic type '" ++ @tagName(f.sem) ++ "'. ARCHITECTURE.md §7 requires " ++
+                    "fixed point inside the rollback boundary — a re-simulated float is not " ++
+                    "reproducible across x86, ARM and wasm32. Use .fixed, .fixed_vec3 or " ++
+                    ".fixed_quat; the WIRE type may still quantize.");
+            }
+        }
+    }
+}
+
+/// A field's encoding must be one its semantic type can actually produce.
+pub fn assertEncodable(comptime c: Component) void {
+    comptime {
+        for (c.fields) |f| {
+            if (!f.sem.permits(f.wire)) {
+                @compileError("component '" ++ c.name ++ "' field '" ++ f.name ++
+                    "': semantic type '" ++ @tagName(f.sem) ++ "' cannot be encoded as wire type '" ++
+                    @tagName(f.wire) ++ "'.");
+            }
+        }
+    }
 }
 
 test "derived never enters the replication projection" {

@@ -15,6 +15,7 @@ const std = @import("std");
 const fpz = @import("fpz");
 const bits = @import("bits.zig");
 const quant = @import("quant.zig");
+const fq = @import("fixedquant.zig");
 const schema_mod = @import("bedlam_schema");
 const d = schema_mod.declare;
 const w = schema_mod.wire;
@@ -68,10 +69,18 @@ pub const EntityHandle = packed struct(u32) {
     generation: u8,
 };
 
-/// The Zig storage type for a wire type. Physical layout may differ per target
-/// (`ARCHITECTURE.md` §0 P1); the wire encoding may not.
-pub fn StorageType(comptime wt: w.WireType) type {
-    return switch (wt) {
+/// The Zig storage type for a field, derived from its SEMANTIC type -- what the
+/// simulation holds -- not from its wire type.
+///
+/// Deriving storage from the wire type is what put `[3]f32` inside `Transform`, a
+/// `.predicted` component that enters the rollback projection, in direct violation of
+/// `ARCHITECTURE.md` §7. The wire may quantize to 16 bits; the simulation must still hold
+/// something reproducible across x86, ARM and wasm32. `declare.assertRollbackSafe` makes
+/// that a build error rather than a reading-comprehension exercise.
+///
+/// Physical layout may differ per target (§0 P1); the wire encoding may not.
+pub fn StorageType(comptime sem: d.SemanticType) type {
+    return switch (sem) {
         .bool => bool,
         .u8 => u8,
         .u16 => u16,
@@ -81,11 +90,11 @@ pub fn StorageType(comptime wt: w.WireType) type {
         .i16 => i16,
         .i32 => i32,
         .i64 => i64,
+        .fixed => Fixed,
+        .fixed_vec3 => [3]Fixed,
+        .fixed_quat => [4]Fixed,
         .f32 => f32,
         .f64 => f64,
-        .q16_16 => Fixed,
-        .vec3_quantized => [3]f32,
-        .quat_smallest_three => [4]f32,
         .entity_handle => EntityHandle,
         .string_id => u32,
         .blob => []const u8,
@@ -99,7 +108,7 @@ pub fn Storage(comptime c: d.Component) type {
         var types: [c.fields.len]type = undefined;
         for (c.fields, 0..) |f, i| {
             names[i] = f.name;
-            types[i] = StorageType(f.wire);
+            types[i] = StorageType(f.sem);
         }
         // `.auto` layout, not `.@"extern"` or `.@"packed"`: ARCHITECTURE.md §0 P1 lets
         // physical layout differ per target, and the wire encoding below never reads
@@ -110,15 +119,15 @@ pub fn Storage(comptime c: d.Component) type {
 
 /// Bits a field occupies on the wire, after quantization.
 pub fn fieldBits(comptime f: d.Field) u7 {
-    return switch (f.wire) {
-        .vec3_quantized => switch (f.quant) {
+    return switch (f.sem) {
+        .fixed_vec3 => switch (f.quant) {
             .bounded => |q| @as(u7, q.bits) * 3,
-            else => @compileError("vec3_quantized field '" ++ f.name ++
+            else => @compileError("fixed_vec3 field '" ++ f.name ++
                 "' needs a bounded quantization policy; an unquantized vector does not fit the §4.1 byte budget"),
         },
-        .quat_smallest_three => switch (f.quant) {
+        .fixed_quat => switch (f.quant) {
             .angular => |q| 2 + @as(u7, q.bits) * 3,
-            else => @compileError("quat_smallest_three field '" ++ f.name ++ "' needs an angular quantization policy"),
+            else => @compileError("fixed_quat field '" ++ f.name ++ "' needs an angular quantization policy"),
         },
         .blob => @compileError("blob field '" ++ f.name ++
             "' is variable-length and has no fixed bit width; blobs belong on bulk_content, not in a snapshot"),
@@ -135,9 +144,9 @@ pub fn fieldBits(comptime f: d.Field) u7 {
             // neither of them applies would refuse to connect while being byte-identical
             // on the wire.
             if (f.quant != .none) {
-                @compileError("field '" ++ f.name ++ "' declares a quantization policy, but wire type '" ++
-                    @tagName(f.wire) ++ "' does not quantize. Use vec3_quantized or " ++
-                    "quat_smallest_three, or drop the policy — a declared policy that is " ++
+                @compileError("field '" ++ f.name ++ "' declares a quantization policy, but semantic type '" ++
+                    @tagName(f.sem) ++ "' does not quantize. Use fixed_vec3 or " ++
+                    "fixed_quat, or drop the policy — a declared policy that is " ++
                     "silently ignored still changes the compatibility fingerprint.");
             }
             break :blk @intCast(f.wire.wireBits() orelse
@@ -201,7 +210,7 @@ fn wireOrder(comptime c: d.Component) [c.fields.len]usize {
 
 fn encodeField(comptime f: d.Field, value: anytype, writer: *bits.Writer) bits.Writer.Error!void {
     const n = comptime fieldBits(f);
-    switch (f.wire) {
+    switch (f.sem) {
         .bool => try writer.writeBool(value),
         .u8, .u16, .u32, .u64 => try writer.writeBits(value, n),
         .i8, .i16, .i32, .i64 => {
@@ -211,18 +220,22 @@ fn encodeField(comptime f: d.Field, value: anytype, writer: *bits.Writer) bits.W
         },
         .f32 => try writer.writeBits(@as(u32, @bitCast(value)), 32),
         .f64 => try writer.writeBits(@as(u64, @bitCast(value)), 64),
-        .q16_16 => try writer.writeBits(@as(u32, @bitCast(WireFixed.narrow(value))), 32),
+        .fixed => try writer.writeBits(@as(u32, @bitCast(WireFixed.narrow(value))), 32),
         .entity_handle => try writer.writeBits(@as(u32, @bitCast(value)), 32),
         .string_id => try writer.writeBits(value, 32),
-        .vec3_quantized => {
+        .fixed_vec3 => {
             const q = comptime f.quant.bounded;
+            // Bounds are declared as comptime floats for authoring convenience and folded
+            // to Fixed here. fpz permits float at comptime and never at runtime.
+            const lo = comptime fpz.Fixed.rconst(q.min);
+            const hi = comptime fpz.Fixed.rconst(q.max);
             inline for (0..3) |i| {
-                try writer.writeBits(quant.quantize(value[i], q.bits, q.min, q.max), q.bits);
+                try writer.writeBits(fq.quantize(value[i], q.bits, lo, hi), q.bits);
             }
         },
-        .quat_smallest_three => {
+        .fixed_quat => {
             const q = comptime f.quant.angular;
-            const qq = quant.quantizeQuat(value, q.bits);
+            const qq = fq.quantizeQuat(value, q.bits);
             try writer.writeBits(qq.largest, 2);
             try writer.writeBits(qq.a, q.bits);
             try writer.writeBits(qq.b, q.bits);
@@ -232,10 +245,10 @@ fn encodeField(comptime f: d.Field, value: anytype, writer: *bits.Writer) bits.W
     }
 }
 
-fn decodeField(comptime f: d.Field, reader: *bits.Reader) bits.Reader.Error!StorageType(f.wire) {
+fn decodeField(comptime f: d.Field, reader: *bits.Reader) bits.Reader.Error!StorageType(f.sem) {
     const n = comptime fieldBits(f);
-    const T = StorageType(f.wire);
-    return switch (f.wire) {
+    const T = StorageType(f.sem);
+    return switch (f.sem) {
         .bool => try reader.readBool(),
         .u8, .u16, .u32, .u64 => @intCast(try reader.readBits(n)),
         .i8, .i16, .i32, .i64 => blk: {
@@ -244,24 +257,26 @@ fn decodeField(comptime f: d.Field, reader: *bits.Reader) bits.Reader.Error!Stor
         },
         .f32 => @bitCast(@as(u32, @intCast(try reader.readBits(32)))),
         .f64 => @bitCast(try reader.readBits(64)),
-        .q16_16 => WireFixed.widen(@bitCast(@as(u32, @intCast(try reader.readBits(32))))),
+        .fixed => WireFixed.widen(@bitCast(@as(u32, @intCast(try reader.readBits(32))))),
         .entity_handle => @bitCast(@as(u32, @intCast(try reader.readBits(32)))),
         .string_id => @intCast(try reader.readBits(32)),
-        .vec3_quantized => blk: {
+        .fixed_vec3 => blk: {
             const q = comptime f.quant.bounded;
-            var out: [3]f32 = undefined;
+            const lo = comptime fpz.Fixed.rconst(q.min);
+            const hi = comptime fpz.Fixed.rconst(q.max);
+            var out: [3]Fixed = undefined;
             inline for (0..3) |i| {
-                out[i] = quant.dequantize(try reader.readBits(q.bits), q.bits, q.min, q.max);
+                out[i] = fq.dequantize(try reader.readBits(q.bits), q.bits, lo, hi);
             }
             break :blk out;
         },
-        .quat_smallest_three => blk: {
+        .fixed_quat => blk: {
             const q = comptime f.quant.angular;
             const largest: u2 = @intCast(try reader.readBits(2));
             const a = try reader.readBits(q.bits);
             const b = try reader.readBits(q.bits);
             const c = try reader.readBits(q.bits);
-            break :blk quant.dequantizeQuat(.{ .largest = largest, .a = a, .b = b, .c = c }, q.bits);
+            break :blk fq.dequantizeQuat(.{ .largest = largest, .a = a, .b = b, .c = c }, q.bits);
         },
         .blob => comptime unreachable,
     };

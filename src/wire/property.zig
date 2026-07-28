@@ -28,38 +28,48 @@ const bits = @import("bits.zig");
 const quant = @import("quant.zig");
 const codec = @import("codec.zig");
 const schema_mod = @import("bedlam_schema");
+const fpz = @import("fpz");
+
+const F = fpz.Fixed;
+/// Unit norm, squared, in raw Q40.24 units.
+const one_sq: i128 = @as(i128, F.ONE.raw) * @as(i128, F.ONE.raw);
 
 const schema = schema_mod.schema;
 const Transform = schema.components[0];
 
 /// Every property the decode path must satisfy for arbitrary input.
 ///
-/// Not merely "does not crash". A decoder that cannot crash but emits NaN positions or
-/// non-unit rotations has moved the failure downstream into the simulation, where it is
-/// far harder to attribute.
+/// Not merely "does not crash". A decoder that cannot crash but emits an unusable value
+/// has moved the failure downstream into the simulation, where it is far harder to
+/// attribute.
+///
+/// **NaN and infinity checks are gone, and their absence is the point.** They were real
+/// hazards while `Transform` stored `f32`; now that storage follows the semantic type and
+/// a `.predicted` component holds `fpz.Fixed`, neither value is representable. The class
+/// of bug was removed by the type rather than by a guard — which is what
+/// `ARCHITECTURE.md` §7 is asking for when it says fixed point belongs inside the
+/// rollback boundary.
 fn checkDecodeInvariants(input: []const u8) !void {
     var reader = bits.Reader.init(input);
     const decoded = codec.decode(Transform, &reader) catch |err| switch (err) {
         error.EndOfStream, error.Malformed => return, // legitimate for short input
     };
 
+    // Quantized against [-4096, 4096]; nothing outside that can be produced.
+    const pos_limit = F.rconst(4097).raw;
     for (decoded.position) |c| {
-        if (std.math.isNan(c)) return error.DecodedNaN;
-        if (std.math.isInf(c)) return error.DecodedInf;
-        // Quantized against [-4096, 4096]; nothing outside can be produced.
-        if (@abs(c) > 4097) return error.DecodedOutOfRange;
+        if (c.raw > pos_limit or c.raw < -pos_limit) return error.DecodedOutOfRange;
     }
+    const vel_limit = F.rconst(257).raw;
     for (decoded.velocity) |c| {
-        if (std.math.isNan(c)) return error.DecodedNaN;
-        if (@abs(c) > 257) return error.DecodedOutOfRange;
+        if (c.raw > vel_limit or c.raw < -vel_limit) return error.DecodedOutOfRange;
     }
 
-    var norm: f32 = 0;
-    for (decoded.rotation) |c| {
-        if (std.math.isNan(c)) return error.DecodedNaN;
-        norm += c * c;
+    var norm: i128 = 0;
+    for (decoded.rotation) |c| norm += @as(i128, c.raw) * @as(i128, c.raw);
+    if (norm < @divTrunc(one_sq * 96, 100) or norm > @divTrunc(one_sq * 104, 100)) {
+        return error.DecodedNonRotation;
     }
-    if (@abs(norm - 1.0) > 0.01) return error.DecodedNonRotation;
 
     // Re-encoding must succeed. Relays, replay capture, and host migration all round
     // peer-supplied state back through our own encoder, which asserts on unit norm — so
@@ -72,31 +82,41 @@ fn checkDecodeInvariants(input: []const u8) !void {
 const encoded_bytes = (codec.componentBits(Transform) + 7) / 8;
 
 /// A valid encoding, used as the base for mutation.
-fn validEncoding(rand: std.Random, out: []u8) []const u8 {
-    var q: [4]f32 = undefined;
-    var norm: f32 = 0;
-    for (&q) |*c| {
-        c.* = rand.float(f32) * 2.0 - 1.0;
-        norm += c.* * c.*;
-    }
-    norm = @sqrt(norm);
-    if (norm < 1e-6) {
-        q = .{ 1, 0, 0, 0 };
-    } else {
-        for (&q) |*c| c.* /= norm;
-    }
+/// A random unit quaternion, built with integer arithmetic so the generator cannot
+/// itself introduce a float dependency into a test of a float-free path.
+fn randomUnitQuat(rand: std.Random) [4]F {
+    var q: [4]F = undefined;
+    while (true) {
+        var norm_sq: i128 = 0;
+        for (&q) |*c| {
+            // Uniform in [-1, 1] in raw units.
+            const r = rand.intRangeAtMost(i64, -F.ONE.raw, F.ONE.raw);
+            c.* = F.fromRaw(r);
+            norm_sq += @as(i128, r) * @as(i128, r);
+        }
+        if (norm_sq == 0) continue;
+        const scale = F.div(F.ONE, fpz.sqrt(F.fromRaw(@intCast(norm_sq >> F.frac_bits))));
+        for (&q) |*c| c.* = F.mul(c.*, scale);
 
+        var check: i128 = 0;
+        for (q) |c| check += @as(i128, c.raw) * @as(i128, c.raw);
+        // Reject the rare case where rounding leaves it outside the encoder's assertion.
+        if (check > @divTrunc(one_sq * 99, 100) and check < @divTrunc(one_sq * 101, 100)) return q;
+    }
+}
+
+fn validEncoding(rand: std.Random, out: []u8) []const u8 {
     const value: codec.Storage(Transform) = .{
         .position = .{
-            rand.float(f32) * 8192 - 4096,
-            rand.float(f32) * 8192 - 4096,
-            rand.float(f32) * 8192 - 4096,
+            F.fromRaw(rand.intRangeAtMost(i64, F.rconst(-4096).raw, F.rconst(4096).raw)),
+            F.fromRaw(rand.intRangeAtMost(i64, F.rconst(-4096).raw, F.rconst(4096).raw)),
+            F.fromRaw(rand.intRangeAtMost(i64, F.rconst(-4096).raw, F.rconst(4096).raw)),
         },
-        .rotation = q,
+        .rotation = randomUnitQuat(rand),
         .velocity = .{
-            rand.float(f32) * 512 - 256,
-            rand.float(f32) * 512 - 256,
-            rand.float(f32) * 512 - 256,
+            F.fromRaw(rand.intRangeAtMost(i64, F.rconst(-256).raw, F.rconst(256).raw)),
+            F.fromRaw(rand.intRangeAtMost(i64, F.rconst(-256).raw, F.rconst(256).raw)),
+            F.fromRaw(rand.intRangeAtMost(i64, F.rconst(-256).raw, F.rconst(256).raw)),
         },
     };
 
@@ -188,12 +208,10 @@ test "property: masked decode over a baseline is always usable" {
         var reader = bits.Reader.init(buf[0..len]);
         const decoded = codec.decodeMasked(Transform, baseline, &reader) catch continue;
 
-        var norm: f32 = 0;
-        for (decoded.rotation) |c| {
-            if (std.math.isNan(c)) return error.DecodedNaN;
-            norm += c * c;
+        var norm: i128 = 0;
+        for (decoded.rotation) |c| norm += @as(i128, c.raw) * @as(i128, c.raw);
+        if (norm < @divTrunc(one_sq * 96, 100) or norm > @divTrunc(one_sq * 104, 100)) {
+            return error.DecodedNonRotation;
         }
-        if (@abs(norm - 1.0) > 0.01) return error.DecodedNonRotation;
-        for (decoded.position) |c| if (std.math.isNan(c)) return error.DecodedNaN;
     }
 }

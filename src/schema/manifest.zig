@@ -27,6 +27,9 @@ pub const schema_version = "1.0";
 pub const FieldEntry = struct {
     id: u32,
     name: []const u8,
+    /// What the simulation holds. `SCHEMA_AND_EVOLUTION.md` §3 lists this separately from
+    /// the wire type and describes it as "independent of physical layout".
+    semantic_type: d.SemanticType,
     wire_type: wire.WireType,
     quant: wire.Quantization,
     priority_weight: u8,
@@ -104,6 +107,12 @@ pub fn build() Manifest {
             if (reg.registry.isTombstoned(centry.id))
                 @compileError("schema: component '" ++ c.name ++ "' reuses a tombstoned ID.");
 
+            // §7 and encodability, as build errors. Placed before any field is
+            // processed so the diagnostic names the design mistake rather than a
+            // downstream symptom.
+            d.assertRollbackSafe(c);
+            d.assertEncodable(c);
+
             var fields: []const FieldEntry = &.{};
             for (c.fields) |f| {
                 const qualified = c.name ++ "." ++ f.name;
@@ -139,6 +148,7 @@ pub fn build() Manifest {
                 fields = fields ++ [_]FieldEntry{.{
                     .id = fentry.id,
                     .name = f.name,
+                    .semantic_type = f.sem,
                     .wire_type = f.wire,
                     .quant = f.quant,
                     .priority_weight = f.priority_weight,
@@ -272,6 +282,13 @@ pub fn canonicalFingerprintBytes(
                 if (x.id == fid) break x;
             } else unreachable;
 
+            // Semantic type is deliberately NOT covered. §4 lists what the fingerprint
+            // answers: "can these two builds exchange state without reinterpreting
+            // bytes?" Two peers can hold a value as f32 and as fixed point and still
+            // agree perfectly on the wire — indeed §5.1 says the projections are not the
+            // same bytes. Covering storage here would refuse connections between builds
+            // that are wire-identical, which is the mirror of the layout leak check 5
+            // guards against.
             try out.appendSlice(gpa, try std.fmt.bufPrint(&buf, "F {x:0>8} {s} {d} {d}", .{
                 f.id,
                 @tagName(f.wire_type),
@@ -377,8 +394,8 @@ pub fn render(gpa: std.mem.Allocator, m: Manifest, layout: wire.Layout) ![]u8 {
             @tagName(c.script), @tagName(c.contention), c.introduced,
         }));
         for (c.fields) |f| {
-            try out.appendSlice(gpa, try std.fmt.bufPrint(&buf, "  field {s} id=0x{x:0>8} wire={s} priority={d} interest={}\n", .{
-                f.name, f.id, @tagName(f.wire_type), f.priority_weight, f.interest_sensitive,
+            try out.appendSlice(gpa, try std.fmt.bufPrint(&buf, "  field {s} id=0x{x:0>8} sem={s} wire={s} priority={d} interest={}\n", .{
+                f.name, f.id, @tagName(f.semantic_type), @tagName(f.wire_type), f.priority_weight, f.interest_sensitive,
             }));
         }
     }
@@ -471,8 +488,50 @@ test "check 9 — declaration and manifest agree on shape" {
         inline for (decl.fields, 0..) |f, j| {
             try std.testing.expectEqualStrings(f.name, entry.fields[j].name);
             try std.testing.expectEqual(f.wire, entry.fields[j].wire_type);
+            try std.testing.expectEqual(f.sem, entry.fields[j].semantic_type);
         }
     }
+}
+
+test "no component in the rollback projection holds a float" {
+    // ARCHITECTURE.md §7. `assertRollbackSafe` makes this a build error, so this test
+    // cannot fail while the build succeeds — it exists to state the property in the test
+    // log, and to fail loudly if the guard is ever removed from manifest.build.
+    for (manifest.components) |c| {
+        if (!d.projectionsFor(c.class).rollback) continue;
+        for (c.fields) |f| {
+            try std.testing.expect(!f.semantic_type.isFloat());
+        }
+    }
+}
+
+test "the semantic type is not part of the compatibility fingerprint" {
+    // §4 answers one question: can these two builds exchange state without
+    // reinterpreting bytes? Two peers can hold a value as fixed point and as f32 and
+    // still agree perfectly on the wire, so covering storage would refuse connections
+    // between builds that are byte-identical on the network — the mirror of the layout
+    // leak that check 5 exists to catch.
+    const gpa = std.testing.allocator;
+    const before = try fingerprint(gpa, manifest, wire.Layout.desktop);
+
+    var fields = try gpa.alloc(FieldEntry, manifest.components[0].fields.len);
+    defer gpa.free(fields);
+    @memcpy(fields, manifest.components[0].fields);
+    fields[0].semantic_type = .f32;
+
+    var comps = try gpa.alloc(ComponentEntry, manifest.components.len);
+    defer gpa.free(comps);
+    @memcpy(comps, manifest.components);
+    comps[0].fields = fields;
+
+    const mutated: Manifest = .{
+        .components = comps,
+        .events = manifest.events,
+        .rpcs = manifest.rpcs,
+        .tombstones = manifest.tombstones,
+    };
+    const after = try fingerprint(gpa, mutated, wire.Layout.desktop);
+    try std.testing.expectEqualStrings(&before, &after);
 }
 
 test "check 10 — no derived component reaches the replication projection" {

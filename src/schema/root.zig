@@ -9,6 +9,7 @@
 //! why it lands first — see `docs/CI_TIERS.md` §4.
 
 pub const wire = @import("wire.zig");
+pub const semantic = @import("semantic.zig");
 pub const declare = @import("declare.zig");
 pub const registry = @import("registry.zig");
 pub const schema = @import("schema.zig");
@@ -16,6 +17,7 @@ pub const manifest = @import("manifest.zig");
 
 test {
     _ = wire;
+    _ = semantic;
     _ = declare;
     _ = registry;
     _ = schema;

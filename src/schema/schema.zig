@@ -20,18 +20,21 @@ pub const components = [_]d.Component{
         .fields = &.{
             .{
                 .name = "position",
+                .sem = .fixed_vec3,
                 .wire = .vec3_quantized,
                 .quant = .{ .bounded = .{ .bits = 16, .min = -4096, .max = 4096 } },
                 .priority_weight = 8,
             },
             .{
                 .name = "rotation",
+                .sem = .fixed_quat,
                 .wire = .quat_smallest_three,
                 .quant = .{ .angular = .{ .bits = 9 } },
                 .priority_weight = 6,
             },
             .{
                 .name = "velocity",
+                .sem = .fixed_vec3,
                 .wire = .vec3_quantized,
                 .quant = .{ .bounded = .{ .bits = 12, .min = -256, .max = 256 } },
                 .priority_weight = 4,
@@ -45,8 +48,8 @@ pub const components = [_]d.Component{
         .class = .authoritative,
         .script = .read,
         .fields = &.{
-            .{ .name = "current", .wire = .q16_16, .priority_weight = 10 },
-            .{ .name = "maximum", .wire = .u16, .priority_weight = 1, .interest_sensitive = false },
+            .{ .name = "current", .sem = .fixed, .wire = .q16_16, .priority_weight = 10 },
+            .{ .name = "maximum", .sem = .u16, .wire = .u16, .priority_weight = 1, .interest_sensitive = false },
         },
     },
 
@@ -55,8 +58,8 @@ pub const components = [_]d.Component{
         .class = .predicted,
         .script = .read,
         .fields = &.{
-            .{ .name = "ammo_in_mag", .wire = .u16, .priority_weight = 5 },
-            .{ .name = "fire_cooldown", .wire = .q16_16, .priority_weight = 7 },
+            .{ .name = "ammo_in_mag", .sem = .u16, .wire = .u16, .priority_weight = 5 },
+            .{ .name = "fire_cooldown", .sem = .fixed, .wire = .q16_16, .priority_weight = 7 },
         },
     },
 
@@ -68,7 +71,7 @@ pub const components = [_]d.Component{
         .script = .read_write,
         .contention = .subtree,
         .fields = &.{
-            .{ .name = "fraction", .wire = .q16_16, .priority_weight = 3 },
+            .{ .name = "fraction", .sem = .fixed, .wire = .q16_16, .priority_weight = 3 },
         },
     },
 
@@ -77,7 +80,7 @@ pub const components = [_]d.Component{
         .name = "LootKnowledge",
         .class = .client_private,
         .fields = &.{
-            .{ .name = "seen_mask", .wire = .u64, .interest_sensitive = false },
+            .{ .name = "seen_mask", .sem = .u64, .wire = .u64, .interest_sensitive = false },
         },
     },
 
@@ -87,7 +90,7 @@ pub const components = [_]d.Component{
         .name = "FragmentDebris",
         .class = .derived,
         .fields = &.{
-            .{ .name = "settle_age", .wire = .u16 },
+            .{ .name = "settle_age", .sem = .u16, .wire = .u16 },
         },
     },
 };

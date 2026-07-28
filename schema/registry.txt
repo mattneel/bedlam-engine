@@ -1,0 +1,74 @@
+# Bedlam — stable identity registry
+#
+# The ONLY hand-maintained input to the manifest generator, and deliberately small.
+# See docs/SCHEMA_AND_EVOLUTION.md §2.
+#
+# IDs are ALLOCATED here, never derived. An ID derived from source order,
+# declaration order, layout order, or a compiler symbol hash works perfectly until
+# the first refactor, at which point every save, replay, recorded input log,
+# connected older client, and in-flight rolling deploy reinterprets the same bytes
+# as different fields. Silently.
+#
+# Rules, all enforced at build time by src/schema/manifest.zig:
+#
+#   - A new identity takes the next unused ID in its space.
+#   - Removal tombstones the ID. Tombstoned IDs are NEVER reusable. There is no
+#     override flag and none will be added; the temptation arrives about once a
+#     year and the cost of yielding is unbounded.
+#   - Renaming preserves the ID. A rename is a declaration change, not an
+#     identity change.
+#   - Changing a field's wire type requires a NEW id, the old one tombstoned, and
+#     a migration edge.
+#   - ID spaces are separate per kind.
+#
+# FORMAT
+#
+#   component <Name>              id=<hex>  introduced=<ver> [deprecated=<ver>]
+#   component <Name>.<field>      id=<hex>  introduced=<ver> [deprecated=<ver>] wire=<type>
+#   event     <Name>              id=<hex>  introduced=<ver>
+#   rpc       <Name>              id=<hex>  introduced=<ver>
+#   lease     <Name>              id=<hex>  introduced=<ver>
+#   tombstone <kind> <Name>       id=<hex>  retired=<ver>
+#
+# A dotted name denotes a field, whose ID is <component>_<index> — the component
+# ID in the high half, the field index in the low half.
+#
+# `wire=` on a field pins its encoding. docs/SCHEMA_AND_EVOLUTION.md §10 check 3
+# requires detecting a wire-type change made without a new ID; pinning it here
+# catches that at build time rather than requiring a diff against the previously
+# released manifest. Extension to §2's format, for that reason.
+
+component  Transform                   id=0x0041      introduced=1.0
+component  Transform.position          id=0x00410001  introduced=1.0  wire=vec3_quantized
+component  Transform.rotation          id=0x00410002  introduced=1.0  wire=quat_smallest_three
+component  Transform.velocity          id=0x00410004  introduced=1.0  wire=vec3_quantized
+
+component  Health                      id=0x0055      introduced=1.0
+component  Health.current              id=0x00550007  introduced=1.0  wire=q16_16
+component  Health.maximum              id=0x00550003  introduced=1.0  wire=u16
+
+component  WeaponState                 id=0x0061      introduced=1.0
+component  WeaponState.ammo_in_mag     id=0x00610001  introduced=1.0  wire=u16
+component  WeaponState.fire_cooldown   id=0x00610002  introduced=1.0  wire=q16_16
+
+component  ExtractionProgress          id=0x0072      introduced=1.0
+component  ExtractionProgress.fraction id=0x00720001  introduced=1.0  wire=q16_16
+
+component  LootKnowledge               id=0x0080      introduced=1.0
+component  LootKnowledge.seen_mask     id=0x00800001  introduced=1.0  wire=u64
+
+component  FragmentDebris              id=0x0091      introduced=1.0
+component  FragmentDebris.settle_age   id=0x00910001  introduced=1.0  wire=u16
+
+event      WeaponFired                 id=0x0102      introduced=1.0
+event      StructureBroke              id=0x0103      introduced=1.0
+
+rpc        RequestExtraction           id=0x0301      introduced=1.3
+
+# Tombstones. Permanent. Never reuse these IDs.
+#
+# Health.value was u16 and became q16.16 in 3.1. A wire-type change is a new
+# identity, so 0x00550002 is retired and Health.current (0x00550007) replaces it.
+# This is the worked example from docs/SCHEMA_AND_EVOLUTION.md §5.
+tombstone  component  Health.value      id=0x00550002  retired=3.1
+tombstone  component  Transform.scale   id=0x00410003  retired=2.4

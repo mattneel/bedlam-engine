@@ -150,6 +150,46 @@ jobs:
         run: zig build test -Doptimize=${{ matrix.optimize }}
 
   # ---------------------------------------------------------------------------
+  # Schema identity. docs/SCHEMA_AND_EVOLUTION.md §10.
+  #
+  # Pure CPU — no GPU, no device, no network, no Apple hardware. Checks 1, 2, 3, 9
+  # and 10 are @compileError, so a violation fails `zig build` rather than a test.
+  # This job covers check 4 (manifest byte-identical across two runs of the same
+  # commit) at the build level, where a cold cache is a real second run rather than
+  # a second call in one process.
+  # ---------------------------------------------------------------------------
+  schema:
+    name: schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: emit manifest
+        run: |
+          zig build schema
+          cp zig-out/schema/manifest.txt /tmp/first.txt
+          cat /tmp/first.txt
+
+      - name: check 4 — byte-identical from a cold cache
+        run: |
+          rm -rf .zig-cache zig-out
+          zig build schema
+          if ! diff -u /tmp/first.txt zig-out/schema/manifest.txt; then
+            echo "::error::Manifest is not deterministic for one commit (§10 check 4)."
+            exit 1
+          fi
+          echo "manifest is byte-identical across a cold rebuild"
+
+      - name: fingerprint is stable and recorded
+        run: |
+          fp=$(grep '^fingerprint ' zig-out/schema/manifest.txt | cut -d' ' -f2)
+          echo "fingerprint: $fp"
+          test -n "$fp" || { echo "::error::no fingerprint in manifest"; exit 1; }
+
+  # ---------------------------------------------------------------------------
   # Hygiene.
   # ---------------------------------------------------------------------------
   fmt:

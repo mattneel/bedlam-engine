@@ -94,10 +94,31 @@ Enforcing both structurally, by which artifact kind and root file the build grap
 
 **macOS cross-links from any host and iOS does not.** Zig bundles libSystem `.tbd` stubs but no iOS SDK. This is a useful boundary rather than an inconvenience: it means the portable core can be kept compiling for Apple targets with no Apple hardware, which is a continuous test of §18.9 — no platform SDK types leaking into portable simulation code.
 
+### Schema identity — live
+
+`SCHEMA_AND_EVOLUTION.md` §10 is the first part of the spec with an implementation, because it is the highest-leverage piece per `ARCHITECTURE.md` §20 and needs no GPU, device, network, or Apple hardware to verify completely.
+
+| Check | Status | Enforced by |
+|---|---|---|
+| 1 — tombstoned ID reuse | ✅ | `@compileError` |
+| 2 — ID with no registry entry | ✅ | `@compileError` |
+| 3 — wire type changed without a new ID | ✅ | `@compileError`, via `wire=` pinned in the registry |
+| 4 — manifest byte-identical across two runs | ✅ | test, plus a cold-cache rebuild in the `schema` CI job |
+| 5 — fingerprint identical across target layouts | ✅ | test over `Layout.wasm32` / `mobile` / `desktop` |
+| 6 — migration edge missing | ⬛ | needs a second released version |
+| 7 — migration edge without a test | ⬛ | as above |
+| 8 — edge test failing against the corpus | ⬛ | needs the §11 corpus |
+| 9 — declaration and manifest disagree on shape | ✅ | test |
+| 10 — class contradicted by usage | ✅ | `@compileError` |
+
+Checks 1, 2, 3, 9 and 10 are `@compileError` rather than tests deliberately: a violation produces **no binary at all**. An engine that compiles with a reused tombstone is an engine that ships with one.
+
+Check 5 is structurally guaranteed as well as tested — `wire.Layout` has no path into `canonicalFingerprintBytes`, and the manifest generator is a host tool that always runs natively, so per-target layout cannot reach the manifest even by accident.
+
 ### Rows not yet present
 
 - **Cross-ISA determinism.** `ARCHITECTURE.md` §7 requires fixed-point inside the rollback boundary, no FMA contraction, no fast-math, own polynomial transcendentals, and fixed-tree reductions. Nothing enforces any of that except running the same simulation on two ISAs and comparing per-tick hashes. The matrix above already provides x86_64 and aarch64 natively across three operating systems, which is the substrate. The row is blocked on `--verify-determinism` existing, not on hardware. **This is the highest-value job in Tier C and should land with the first tick loop, per `AGENTS.md` §3.**
-- **Schema and manifest checks.** All ten checks in `SCHEMA_AND_EVOLUTION.md` §10 are pure CPU and need no device, GPU, or network. Check 5 — fingerprint identical across platform targets — *requires* the multi-target matrix above and is the check that doc flags as catching the error that "looks like a netcode bug for weeks." Blocked on the manifest generator existing.
+- **Migration edges, negotiation, and the corpus.** `SCHEMA_AND_EVOLUTION.md` §5, §6, §11 and §10's checks 6, 7 and 8 are not implemented. They need a released schema version to migrate from, so they land with the second one. Checks 1, 2, 3, 4, 5, 9 and 10 are live — see below.
 - **Android emulator and iOS Simulator.** Cover lifecycle, suspend/resume, and device loss (`AGENTS.md` §4) without physical hardware. Neither produces a number.
 - **iOS app bundle — package, sign, install, launch.** The static-library row proves the portable core compiles for iOS. It proves nothing about whether an app runs, and must never be read as though it did. This needs the Objective-C entry TU, an `Info.plist`, entitlements, a signing identity, and a `macos-latest` runner with the `--libc` file above. It is an `AGENTS.md` §4 M0 exit criterion in its own right.
 - **Browser harness.** The web row compiles a module; nothing yet instantiates it under Worker + OffscreenCanvas + cross-origin isolation. Headless Chrome on a hosted runner has no GPU, so WebGPU would fall back to software — correctness only, never a number.

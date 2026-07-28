@@ -10,6 +10,20 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // Schema, identity, and manifest generation. docs/SCHEMA_AND_EVOLUTION.md.
+    //
+    // The registry is embedded rather than read at runtime: parsing it at comptime is
+    // what makes §10 checks 1, 2, 3, 9 and 10 build failures instead of test failures.
+    // A violation produces no binary, which is the point — an engine that compiles with
+    // a reused tombstone will ship with one.
+    const schema_mod = b.addModule("bedlam_schema", .{
+        .root_source_file = b.path("src/schema/root.zig"),
+        .target = target,
+    });
+    schema_mod.addAnonymousImport("registry_text", .{
+        .root_source_file = b.path("schema/registry.txt"),
+    });
+
     const t = target.result;
     const is_wasm_freestanding = t.cpu.arch.isWasm() and t.os.tag == .freestanding;
     const is_ios = t.os.tag == .ios;
@@ -76,7 +90,26 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run_cmd.step);
     }
 
-    // Test executables cover one module each, hence two.
+    // The manifest generator. A host tool: it always runs natively, so per-target
+    // physical layout cannot reach the manifest even by accident (§10 check 5).
+    const emit = b.addExecutable(.{
+        .name = "emit_manifest",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/emit_manifest.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+            .imports = &.{.{ .name = "bedlam_schema", .module = schema_mod }},
+        }),
+    });
+
+    const emit_run = b.addRunArtifact(emit);
+    const manifest_file = emit_run.addOutputFileArg("manifest.txt");
+    const install_manifest = b.addInstallFileWithDir(manifest_file, .prefix, "schema/manifest.txt");
+
+    const schema_step = b.step("schema", "Emit the canonical schema manifest");
+    schema_step.dependOn(&install_manifest.step);
+
+    // Test executables cover one module each.
     const test_step = b.step("test", "Run tests");
 
     const mod_tests = b.addTest(.{ .root_module = mod });
@@ -84,4 +117,7 @@ pub fn build(b: *std.Build) void {
 
     const artifact_tests = b.addTest(.{ .root_module = artifact.root_module });
     test_step.dependOn(&b.addRunArtifact(artifact_tests).step);
+
+    const schema_tests = b.addTest(.{ .root_module = schema_mod });
+    test_step.dependOn(&b.addRunArtifact(schema_tests).step);
 }

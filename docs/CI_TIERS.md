@@ -74,7 +74,7 @@ Rows are per target family in `ARCHITECTURE.md` §4.1. **Dark rows are present a
 | macOS | ✅ cross from Linux | ✅ `macos-latest` aarch64 | lit | — |
 | Android | ✅ cross | ⬛ | partial | emulator row; NDK for GameActivity surfaces |
 | Web (`wasm32-wasi`) | ✅ cross | ⬛ | partial | second wasm config, not the shipping target |
-| Web (`wasm32-freestanding`) | ✅ cross | ✅ headless Chrome | lit | Worker + OffscreenCanvas verified; no GPU on hosted runners |
+| Web (`wasm32-freestanding`) | ✅ cross | ✅ headless Chrome, per commit | lit | Worker + OffscreenCanvas + input verified; no GPU on hosted runners |
 | iOS | ✅ cross (static lib) | ⬛ | partial | app bundle, signing and launch — see below |
 
 Verified locally against Zig 0.16.0: **all eight build targets compile clean from a Windows host with no platform SDKs installed**, including `aarch64-ios`. No row is dark.

@@ -229,6 +229,61 @@ jobs:
         run: node tools/web/check.mjs zig-out/bin/bedlam_engine
 
   # ---------------------------------------------------------------------------
+  # M0 criterion 8, per commit. AGENTS.md §4.
+  #
+  # Node instantiating the wasm module is NOT this check. §18.20: a compiler green
+  # check is not a working target, and Node has no Worker-with-OffscreenCanvas, no
+  # cross-origin isolation, and no browser event loop. This runs real Chrome against a
+  # COOP/COEP server and asserts the worker owns a transferred canvas, drew frames,
+  # received forwarded input, and produced a world digest equal to the main thread's
+  # AND the native binary's.
+  #
+  # Still Tier C: a hosted runner has no GPU, so nothing here may be cited as a
+  # performance result (§3).
+  # ---------------------------------------------------------------------------
+  browser:
+    name: browser (worker + offscreencanvas)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: build both
+        run: |
+          zig build web
+          zig build
+      - name: worker + offscreencanvas in real chrome
+        run: node tools/web/browser-check.mjs zig-out/bin/bedlam_engine
+
+  # ---------------------------------------------------------------------------
+  # Every target row builds, from one host, with no platform SDKs installed.
+  #
+  # docs/CI_TIERS.md §4 records this as a property of the project. It is easy to break
+  # without noticing: setting `link_libc` for `os.tag == .linux` also sets it for
+  # ANDROID, which reports the same tag and for which Zig cannot supply libc without
+  # the NDK. That turned a green row red once already.
+  # ---------------------------------------------------------------------------
+  rows:
+    name: all target rows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: build every row from one host
+        run: |
+          set -e
+          for t in x86_64-windows-gnu x86_64-linux-gnu aarch64-linux-gnu                    aarch64-linux-android aarch64-macos aarch64-ios                    wasm32-freestanding wasm32-wasi; do
+            echo "--- $t"
+            zig build -Dtarget=$t
+          done
+
+  # ---------------------------------------------------------------------------
   # Foreign-architecture verification under qemu. ARCHITECTURE.md §7.
   #
   # This exists because the matrix above CANNOT falsify two whole classes of bug:

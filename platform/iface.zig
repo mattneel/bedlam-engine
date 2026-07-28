@@ -29,6 +29,13 @@ pub const Capabilities = struct {
     /// headless container, or on a session with no display.
     surface: bool = false,
     resize: bool = false,
+    /// M0 criterion 2, first half: physical key positions.
+    keyboard: bool = false,
+    /// M0 criterion 2, second half. Distinct from `keyboard` because a backend can have
+    /// keys without composed text — an IME is a separate capability, not a formatting
+    /// detail of the same one.
+    text_input: bool = false,
+    pointer: bool = false,
     /// §4.1 Web: the render surface is a Worker + OffscreenCanvas, not a main-thread
     /// canvas, and `CONFORMANCE_PROFILES.md` §2 makes that a conformance requirement.
     offscreen_surface: bool = false,
@@ -38,6 +45,36 @@ pub const Capabilities = struct {
     device_loss_events: bool = false,
 };
 
+/// Physical key position, not the character it produces.
+///
+/// `AGENTS.md` §4 lists "input and text forwarding" as one criterion because they are two
+/// different things that get conflated. A key is a POSITION — the same physical key is
+/// `W` on QWERTY and `Z` on AZERTY, and a game that binds movement to a character binds
+/// it to a different physical key on every layout. Text is a separate stream carrying
+/// what the layout, dead keys and IME actually produced.
+///
+/// Values follow USB HID usage codes so a backend translating from any platform lands on
+/// the same number, and so the set is not derived from one platform's enumeration.
+pub const Key = enum(u16) {
+    unknown = 0,
+    a = 4,
+    b = 5,
+    c = 6,
+    d = 7,
+    e = 8,
+    s = 22,
+    w = 26,
+    escape = 41,
+    space = 44,
+    left = 80,
+    right = 79,
+    up = 82,
+    down = 81,
+    _,
+};
+
+pub const MouseButton = enum(u8) { left, right, middle, x1, x2, _ };
+
 /// Events the portable layer understands. Deliberately not a superset of any one
 /// platform's event model — a backend that cannot produce one simply never does.
 pub const Event = union(enum) {
@@ -45,6 +82,20 @@ pub const Event = union(enum) {
     resized: Size,
     focus_gained,
     focus_lost,
+
+    key_down: Key,
+    key_up: Key,
+    /// One Unicode scalar produced by the layout. Separate from `key_down` on purpose:
+    /// a dead key produces no text until composed, an IME produces text with no
+    /// corresponding key at all, and `Ctrl+C` produces a key with no text.
+    text: u21,
+
+    mouse_down: MouseButton,
+    mouse_up: MouseButton,
+    /// Client-area coordinates. Absolute rather than relative, because relative motion is
+    /// a raw-input concept and §4.1 puts that on GameInput/Raw Input, which is separate.
+    mouse_moved: struct { x: i32, y: i32 },
+    mouse_wheel: i32,
     /// §4.1: Android lifecycle, iOS backgrounding, browser tab visibility. All three
     /// collapse to this pair because the engine's response is the same.
     suspended,

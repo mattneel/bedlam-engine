@@ -136,31 +136,57 @@ Recorded because the migration is mechanical but the error messages are not: a m
 
 ---
 
-## 6. Zig honours `SOURCE_DATE_EPOCH`, and needs it for a reproducible PE
+## 6. Reproducible builds: release modes yes, Debug no
 
-Not a defect — a fact worth writing down, because the alternative fix is worse.
+Not a defect — a measurement, recorded because the first two conclusions I drew from it were
+both wrong in ways that would have shipped as bad advice.
 
-**Where it matters:** `tools/package.zig`, `scripts/reproducible.ps1`.
+**Where it matters:** `tools/package.zig`, `scripts/reproducible.ps1`, the `reproducible`
+CI job.
 
-**Observed:** two cold builds of this repo, 30 seconds apart, produced
-`bedlam_engine.exe` differing in exactly **two bytes out of 2,586,112**:
+### The measurement
+
+Two cold builds (cache cleared between), same commit, same host:
+
+| Mode | Windows PE | Linux ELF |
+|---|---|---|
+| `Debug` | reproducible **only with `SOURCE_DATE_EPOCH`** | **not** reproducible |
+| `ReleaseSafe` | reproducible, no environment needed | reproducible, no environment needed |
+| `ReleaseSmall` | reproducible | reproducible |
+
+**Debug on Windows** differs in exactly two bytes out of 2,586,112 — `0x6a68db32` against
+`0x6a68db50`, 30 seconds apart, matching the gap between the builds:
 
 ```
-offset      129  '2' vs 'P'      # COFF header TimeDateStamp
-offset  2488325  '2' vs 'P'      # its copy in the debug directory
+offset      129   COFF header TimeDateStamp
+offset  2488325   its copy in the debug directory
 ```
 
-`0x6a68db32` against `0x6a68db50` — 30 seconds, matching the gap between the builds.
-Everything else was identical, **including the RSDS debug GUID** that ties the binary to its
-PDB. So Zig and LLD are already reproducible on this target; one field is the wall clock.
+Everything else is identical, including the RSDS debug GUID that ties the binary to its PDB.
+`SOURCE_DATE_EPOCH` pins that field.
 
-Setting `SOURCE_DATE_EPOCH` makes two cold builds byte-identical. Verified, and verified
-non-vacuously: a *different* epoch changes the output, so the check is measuring something.
+**Debug on Linux** is a different story and does not yield to the epoch. Two cold Debug ELF
+builds are the same total size (18,500,365 bytes) and diverge at byte 2,713 — inside the
+**section header table**, with different section offsets and sizes (`0x9899d1` against
+`0x989a31`). Some section's *content length* differs, so this is not a timestamp. Zig
+0.16's self-hosted backend carries incremental-compilation metadata in Debug that release
+modes do not.
 
-**Why not rewrite the binary instead:** the debug directory timestamp participates in PDB
-association for some toolchains, and M0 criterion 9 is crash capture *and symbolication*.
-Zeroing a field that a symbol server may key on, to win a property the environment already
-grants, is a bad trade.
+### Two wrong turns, both worth recording
+
+**"`SOURCE_DATE_EPOCH` is required."** It is required for *Debug on Windows* and for nothing
+else. Release builds reproduce with no environment setup on either platform, and release is
+the only mode a distributable is built in. Requiring an environment variable that the
+shipping configuration does not need is advice that decays into cargo cult.
+
+**"Use the epoch as the control."** The reproducibility check needs a control — change an
+input, require the output to move — or a packager emitting a constant passes everything.
+Varying `SOURCE_DATE_EPOCH` looked like the obvious control and is useless in release mode,
+because the timestamp is not taken from it there: the control passed trivially and would
+have certified a pipeline that ignored its inputs entirely. The control is now the optimize
+mode, which demonstrably changes the bytes.
+
+**Not worked around, because it does not need to be.** The gate builds `-Doptimize=ReleaseSafe`.
 
 ---
 

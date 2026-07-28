@@ -16,21 +16,16 @@
 //! So: fixed mtimes, fixed uid/gid, fixed permissions, entries in sorted order. Nothing
 //! here reads the clock.
 //!
-//! **The archive layer being deterministic is not the whole claim, and it was worth
-//! measuring rather than assuming.** Two cold builds of this repo 30 seconds apart produced
-//! binaries differing in exactly **two bytes out of 2,586,112** — the PE header's
-//! `TimeDateStamp` and its copy in the debug directory. Everything else, including the RSDS
-//! debug GUID that associates the binary with its PDB, was identical. So Zig and LLD are
-//! already reproducible here; one field is the wall clock.
+//! **The archive layer being deterministic is not the whole claim, so the rest was
+//! measured.** Release builds reproduce on Windows and Linux with no environment setup;
+//! Debug does not — on Windows it needs `SOURCE_DATE_EPOCH` to pin the PE TimeDateStamp,
+//! and on Linux it does not reproduce at all under Zig 0.16. That costs nothing here: a
+//! distributable is a release build. The numbers, and two wrong conclusions drawn along the
+//! way, are in `docs/UPSTREAM_FINDINGS.md` §6.
 //!
-//! The fix is `SOURCE_DATE_EPOCH`, which Zig 0.16 honours — verified, and verified to
-//! actually matter by checking that a *different* epoch changes the output. Pinning it from
-//! the environment is the reproducible-builds convention and is much safer than rewriting
-//! the binary afterwards: the debug directory timestamp participates in some toolchains'
-//! PDB association, and criterion 9 is symbolication.
-//!
-//! `scripts/reproducible.ps1` is the gate. It builds twice from a CLEARED cache, because
-//! reusing the cache proves only that Zig cached the artifact.
+//! `scripts/reproducible.ps1` is the gate. It builds twice from a CLEARED cache — reusing
+//! it would prove only that Zig cached the artifact — and varies the optimize mode as a
+//! control, so a packager that ignored its inputs cannot pass.
 //!
 //! ## What this is not
 //!

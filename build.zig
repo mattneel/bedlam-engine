@@ -30,7 +30,13 @@ pub fn build(b: *std.Build) void {
         //
         // Not set on other targets: Windows reaches the OS through its own DLL imports,
         // and freestanding wasm has no libc at all.
-        .link_libc = target.result.os.tag == .linux,
+        //
+        // **Android is excluded, and it is `os.tag == .linux` too.** Zig cannot provide
+        // libc for `aarch64-linux-android` without the NDK, so including it here turned
+        // the Android build row red — a row that had been green precisely because it
+        // needed no SDK. Android's backend is not X11 either; it gets its own when
+        // GameActivity lands.
+        .link_libc = target.result.os.tag == .linux and target.result.abi != .android,
     });
 
     const t = target.result;

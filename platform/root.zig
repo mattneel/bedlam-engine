@@ -24,7 +24,9 @@ pub const lifecycle = @import("lifecycle.zig");
 /// target is a build error naming the gap, not a link error naming a symbol.
 pub const backend = switch (builtin.os.tag) {
     .windows => @import("windows/window.zig"),
-    .linux => @import("linux/window.zig"),
+    // Desktop Linux only. Android reports `os.tag == .linux` and is not X11 — it needs
+    // GameActivity and an ANativeWindow, which is its own backend.
+    .linux => if (builtin.abi == .android) @import("stub.zig") else @import("linux/window.zig"),
     // Every target family in §4.1 that does not yet have a backend gets the stub, which
     // claims nothing. `wasi` is here because it is a second wasm configuration used as a
     // codegen canary (docs/CI_TIERS.md §4), not a shipping target.
@@ -41,6 +43,9 @@ pub const backend = switch (builtin.os.tag) {
 /// `null`, which forces the absence to be visible at the call site.
 pub const audio_backend: ?type = switch (builtin.os.tag) {
     .windows => @import("windows/audio.zig"),
+    // Desktop Linux only, for the reason above: Android's audio is AAudio/OpenSL, not
+    // PulseAudio.
+    .linux => if (builtin.abi == .android) null else @import("linux/audio.zig"),
     else => null,
 };
 

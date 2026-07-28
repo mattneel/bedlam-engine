@@ -121,13 +121,19 @@ jobs:
   # That row is not present yet — see docs/CI_TIERS.md §4.
   # ---------------------------------------------------------------------------
   test:
-    name: test ${{ matrix.name }} · ${{ matrix.optimize }}
-    runs-on: ${{ matrix.host }}
+    name: test ${{ matrix.target.name }} · ${{ matrix.optimize }}
+    runs-on: ${{ matrix.target.host }}
     strategy:
       fail-fast: false
+      # Both axes must be real axes. A bare `optimize` list plus an `include:` block
+      # does NOT produce a cross product — GitHub merges each include entry into the
+      # existing combinations, so the four hosts overwrite one another and only the
+      # last survives. That silently collapses this job from 8 rows to 2 and still
+      # reports success, which is precisely the coverage hole docs/CI_TIERS.md §4
+      # says the matrix exists to prevent.
       matrix:
         optimize: [Debug, ReleaseSafe]
-        include:
+        target:
           - { name: windows-x86_64, host: windows-latest }
           - { name: linux-x86_64,   host: ubuntu-latest }
           - { name: linux-aarch64,  host: ubuntu-24.04-arm }

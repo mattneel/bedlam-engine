@@ -73,11 +73,13 @@ Rows are per target family in `ARCHITECTURE.md` §4.1. **Dark rows are present a
 | Linux arm64 | ✅ cross | ✅ `ubuntu-24.04-arm` aarch64 | lit | — |
 | macOS | ✅ cross from Linux | ✅ `macos-latest` aarch64 | lit | — |
 | Android | ✅ cross | ⬛ | partial | emulator row; NDK for GameActivity surfaces |
-| Web (`wasm32-wasi`) | ✅ cross | ⬛ | canary | not the shipping target — see below |
+| Web (`wasm32-wasi`) | ✅ cross | ⬛ | partial | second wasm config, not the shipping target |
+| Web (`wasm32-freestanding`) | ✅ cross | ⬛ | partial | the shipping target; browser harness row pending |
 | **iOS** | ⬛ | ⬛ | **dark** | no iOS SDK; needs the `macos-latest` runner's Xcode |
-| **Web (`wasm32-freestanding`)** | ⬛ | ⬛ | **dark** | `zig init` entry point pulls `std.Io.Threaded` |
 
-Verified locally against Zig 0.16.0: `x86_64-windows-gnu`, `x86_64-linux-gnu`, `aarch64-linux-gnu`, `aarch64-macos`, `aarch64-linux-android`, and `wasm32-wasi` all build clean from a Windows host with no SDKs installed. `aarch64-ios` fails on `libSystem`; `wasm32-freestanding` fails inside `std.Io.Threaded`.
+Verified locally against Zig 0.16.0: all seven build targets above compile clean from a Windows host with no SDKs installed. `aarch64-ios` is the only failing row, on `unable to find libSystem system library`.
+
+**The web row is rooted at `src/web.zig`, not `src/main.zig`.** A browser artifact is a module the TypeScript bootstrap instantiates (`ARCHITECTURE.md` §2), not a program with a `main()`. Rooting it at a CLI entry point pulls `std.process.Init`, which pulls `std.Io.Threaded`, which needs `posix.getrandom` and `posix.IOV_MAX` — none of which exist on freestanding wasm. Enforcing that structurally, by which file the artifact is rooted at, is deliberate: a conditional inside `main.zig` is something a later change can wander past, and §18.17 says the browser target is not an afterthought.
 
 **macOS cross-links from any host and iOS does not.** Zig bundles libSystem `.tbd` stubs but no iOS SDK. This is a useful boundary rather than an inconvenience: it means the portable core can be kept compiling for Apple targets with no Apple hardware, which is a continuous test of §18.9 — no platform SDK types leaking into portable simulation code.
 

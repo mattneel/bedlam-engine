@@ -81,28 +81,30 @@ jobs:
             target: wasm32-wasi
             host: ubuntu-latest
             status: green
-            # Not the shipping web target. WASI supplies a POSIX surface the browser
-            # does not have; it is here as the wasm32 codegen canary until the
-            # freestanding row lights.
+            # Not the shipping web target — WASI supplies a POSIX surface the browser
+            # does not have. Kept as a second wasm configuration: it exercises the
+            # libc-backed path the freestanding row deliberately cannot reach.
+
+          - platform: web
+            target: wasm32-freestanding
+            host: ubuntu-latest
+            status: green
+            # The shipping web target (docs/CONFORMANCE_PROFILES.md §2 requires
+            # Worker + OffscreenCanvas + SharedArrayBuffer). Rooted at src/web.zig with
+            # no entry point — anything that reaches std.process or std.Io's OS-backed
+            # paths breaks this row and nothing else. Best early warning for §18.17.
 
           # --- dark ------------------------------------------------------------
           - platform: ios
             target: aarch64-ios
             host: macos-latest
             status: dark
-            # Fails as `unable to find libSystem system library`. Zig ships macOS stubs
-            # but not an iOS SDK; this needs Xcode, hence the macOS runner. Lights when
-            # the build graph points at the iOS SDK sysroot.
-
-          - platform: web
-            target: wasm32-freestanding
-            host: ubuntu-latest
-            status: dark
-            # The shipping web target (docs/CONFORMANCE_PROFILES.md §2 requires
-            # Worker + OffscreenCanvas + SharedArrayBuffer). Currently fails because the
-            # `zig init` entry point pulls std.Io.Threaded, which needs posix syscalls
-            # freestanding wasm has no answer for. The first M0 commit deletes that entry
-            # point. This row is the single best early warning for §18.17.
+            sysroot_sdk: iphoneos
+            # Fails as `unable to find libSystem system library`. Zig bundles macOS
+            # libSystem stubs but no iOS SDK, so this row needs Xcode's — hence the
+            # macOS runner and the --sysroot below. Whether that alone suffices, or
+            # whether framework search paths are also needed, is what this row is
+            # currently answering.
 
     steps:
       - uses: actions/checkout@v4
@@ -110,7 +112,15 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: build
-        run: zig build -Dtarget=${{ matrix.target }}
+        shell: bash
+        run: |
+          args=(-Dtarget=${{ matrix.target }})
+          if [ -n "${{ matrix.sysroot_sdk }}" ]; then
+            sdk="$(xcrun --sdk ${{ matrix.sysroot_sdk }} --show-sdk-path)"
+            echo "using SDK: $sdk"
+            args+=(--sysroot "$sdk")
+          fi
+          zig build "${args[@]}"
 
   # ---------------------------------------------------------------------------
   # Test — native execution only. Cross-built artifacts are not run here.

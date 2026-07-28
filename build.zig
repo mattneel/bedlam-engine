@@ -37,6 +37,7 @@ pub fn build(b: *std.Build) void {
         // needed no SDK. Android's backend is not X11 either; it gets its own when
         // GameActivity lands.
         .link_libc = target.result.os.tag == .linux and target.result.abi != .android,
+        .imports = &.{.{ .name = "bedlam_audio", .module = m.audio }},
     });
 
     // Kept in step with `src/root.zig` by a test, not by build.zig cleverness.
@@ -253,6 +254,9 @@ pub fn build(b: *std.Build) void {
     const world_tests = b.addTest(.{ .root_module = world_mod });
     test_step.dependOn(&b.addRunArtifact(world_tests).step);
 
+    const audio_tests = b.addTest(.{ .root_module = m.audio });
+    test_step.dependOn(&b.addRunArtifact(audio_tests).step);
+
     const net_tests = b.addTest(.{ .root_module = net_mod });
     test_step.dependOn(&b.addRunArtifact(net_tests).step);
 
@@ -315,20 +319,10 @@ fn addCrossStep(b: *std.Build) void {
         for (modes) |mode| {
             const mods = engineModules(b, rt, mode, false);
 
-            // The portable half of the platform layer belongs in this gate too. The mixer
-            // is integer Q16 arithmetic over a comptime-built pan table and a `usize`
-            // sample cursor — a byte-order or word-size bug there is exactly the class
-            // this step exists to catch, and it would otherwise be checked only on
-            // x86_64. Rooted at the file rather than `platform/root.zig` so the gate does
-            // not drag in filesystem and backend-selection code that has nothing to say
-            // about endianness.
-            const portable_platform = b.createModule(.{
-                .root_source_file = b.path("platform/mixer.zig"),
-                .target = rt,
-                .optimize = mode,
-            });
-
-            for ([_]*std.Build.Module{ mods.schema, mods.wire, mods.sim, mods.world, mods.net, portable_platform }) |m| {
+            // `bedlam_audio` belongs in this gate: the mixer is integer Q16 arithmetic
+            // over a comptime-built pan table with a `usize` sample cursor, and a
+            // byte-order or word-size bug there is exactly the class this step catches.
+            for ([_]*std.Build.Module{ mods.schema, mods.wire, mods.sim, mods.world, mods.net, mods.audio }) |m| {
                 const t = b.addTest(.{ .root_module = m });
                 const run = b.addRunArtifact(t);
                 // Foreign binaries are cached aggressively; without this a green run can
@@ -350,6 +344,7 @@ fn addCrossStep(b: *std.Build) void {
 /// depending on `world`.
 const Modules = struct {
     schema: *std.Build.Module,
+    audio: *std.Build.Module,
     wire: *std.Build.Module,
     world: *std.Build.Module,
     sim: *std.Build.Module,
@@ -425,6 +420,15 @@ fn engineModules(
     net.addImport("bedlam_schema", schema);
     net.addImport("fpz", fpz);
 
+    // Portable audio: the SPSC command ring and the integer mixer. Engine code, not
+    // platform code — see src/audio/root.zig. Depends on nothing, which is what lets it be
+    // compiled into the browser module as well as linked by a native device backend.
+    const audio = create(b, named, "bedlam_audio", .{
+        .root_source_file = b.path("src/audio/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const engine = create(b, named, "bedlam_engine", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -435,7 +439,8 @@ fn engineModules(
     engine.addImport("bedlam_world", world);
     engine.addImport("bedlam_sim", sim);
     engine.addImport("bedlam_net", net);
+    engine.addImport("bedlam_audio", audio);
     engine.addImport("fpz", fpz);
 
-    return .{ .schema = schema, .wire = wire, .world = world, .sim = sim, .net = net, .engine = engine };
+    return .{ .schema = schema, .wire = wire, .world = world, .sim = sim, .net = net, .audio = audio, .engine = engine };
 }

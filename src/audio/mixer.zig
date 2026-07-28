@@ -22,7 +22,7 @@
 //! underneath a consumer. Streaming is not built; this is the honest subset it needs.
 
 const std = @import("std");
-const audio_ring = @import("audio_ring.zig");
+const audio_ring = @import("ring.zig");
 
 pub const Command = audio_ring.Command;
 

@@ -15,8 +15,10 @@ const builtin = @import("builtin");
 
 pub const iface = @import("iface.zig");
 pub const assets = @import("assets.zig");
-pub const audio_ring = @import("audio_ring.zig");
-pub const mixer = @import("mixer.zig");
+/// Re-exported so callers reach one platform namespace. The implementations live in
+/// `src/audio/` because they are engine code — see that module's header.
+pub const audio_ring = @import("bedlam_audio").ring;
+pub const mixer = @import("bedlam_audio").mixer;
 pub const crash = @import("crash.zig");
 pub const lifecycle = @import("lifecycle.zig");
 

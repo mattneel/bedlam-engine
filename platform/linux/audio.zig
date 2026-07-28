@@ -26,8 +26,8 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const mixer_mod = @import("../mixer.zig");
-const audio_ring = @import("../audio_ring.zig");
+const mixer_mod = @import("bedlam_audio").mixer;
+const audio_ring = @import("bedlam_audio").ring;
 
 pub const Error = error{
     NoDevice,

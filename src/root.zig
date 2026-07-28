@@ -13,6 +13,9 @@ pub const wire = @import("bedlam_wire");
 pub const sim = @import("bedlam_sim");
 pub const world = @import("bedlam_world");
 pub const net = @import("bedlam_net");
+/// Portable audio: the command ring and the integer mixer. The DEVICE is platform code;
+/// this is not, which is why it lives here and why the browser module can use it.
+pub const audio = @import("bedlam_audio");
 pub const fpz = @import("fpz");
 
 /// Pre-1.0. `ARCHITECTURE.md` §19 states exit criteria rather than versions, so this
@@ -25,4 +28,5 @@ test {
     _ = sim;
     _ = world;
     _ = net;
+    _ = audio;
 }

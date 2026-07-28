@@ -25,8 +25,8 @@
 
 const std = @import("std");
 const windows = std.os.windows;
-const mixer_mod = @import("../mixer.zig");
-const audio_ring = @import("../audio_ring.zig");
+const mixer_mod = @import("bedlam_audio").mixer;
+const audio_ring = @import("bedlam_audio").ring;
 
 // std.os.windows does not declare these in 0.16; they are fixed by the Win32 ABI.
 const HRESULT = i32;

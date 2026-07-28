@@ -22,6 +22,11 @@ on:
     branches: ['**']
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Nightly, for the fuzz job only. Fuzzing is unbounded by nature and does not
+    # belong on a per-commit gate; the deterministic randomized decode tests in the
+    # `test` job cover the per-commit case.
+    - cron: '0 3 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -188,6 +193,41 @@ jobs:
           fp=$(grep '^fingerprint ' zig-out/schema/manifest.txt | cut -d' ' -f2)
           echo "fingerprint: $fp"
           test -n "$fp" || { echo "::error::no fingerprint in manifest"; exit 1; }
+
+  # ---------------------------------------------------------------------------
+  # Fuzzing. AGENTS.md §3: "Every parser gets a fuzz target."
+  #
+  # Nightly and on demand, not per-commit — fuzzing runs until it finds something or
+  # you stop it, which is not a gate shape. The per-commit coverage is the
+  # deterministic randomized decode tests in the `test` job.
+  #
+  # Linux only: `zig build test --fuzz` reports "not yet implemented for windows" on
+  # Zig 0.16, so the primary development machine cannot run this at all. That is the
+  # whole reason it lives here.
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: fuzz
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: fuzz the wire decoders
+        run: |
+          set +e
+          timeout --signal=INT 600 zig build test --fuzz
+          code=$?
+          set -e
+          # 124 = timeout fired, 130 = SIGINT. Both mean "ran the full window and found
+          # nothing", which is the pass condition. Anything else is a real finding.
+          if [ $code -ne 0 ] && [ $code -ne 124 ] && [ $code -ne 130 ]; then
+            echo "::error::Fuzzer exited $code — it found something. Reproduce with 'zig build test --fuzz'."
+            exit $code
+          fi
+          echo "fuzz window completed with no findings"
 
   # ---------------------------------------------------------------------------
   # Hygiene.

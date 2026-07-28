@@ -51,7 +51,10 @@ pub const Channel = enum {
 };
 
 pub const Field = struct {
-    name: []const u8,
+    /// Sentinel-terminated because `wire/codec.zig` uses it as a `@Type` struct field
+    /// name when generating storage types. String literals coerce; this costs nothing
+    /// and keeps the codec from having to re-terminate every name at comptime.
+    name: [:0]const u8,
     wire: wire.WireType,
     quant: wire.Quantization = .none,
     /// Feeds the §9.4 priority accumulators.

@@ -24,6 +24,19 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("schema/registry.txt"),
     });
 
+    // Wire format: bit packing, quantization, generated codecs.
+    //
+    // AGENTS.md §3 puts packet parse in ReleaseSafe regardless of the surrounding build
+    // mode. This is the untrusted side of a trust boundary (§14.2) and Zig's safety
+    // checks are cheaper than the CVE. The optimize mode is set here rather than left to
+    // the caller so the rule is enforced by the build graph, not by convention.
+    const wire_mod = b.addModule("bedlam_wire", .{
+        .root_source_file = b.path("src/wire/root.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+    });
+    wire_mod.addImport("bedlam_schema", schema_mod);
+
     const t = target.result;
     const is_wasm_freestanding = t.cpu.arch.isWasm() and t.os.tag == .freestanding;
     const is_ios = t.os.tag == .ios;
@@ -120,4 +133,7 @@ pub fn build(b: *std.Build) void {
 
     const schema_tests = b.addTest(.{ .root_module = schema_mod });
     test_step.dependOn(&b.addRunArtifact(schema_tests).step);
+
+    const wire_tests = b.addTest(.{ .root_module = wire_mod });
+    test_step.dependOn(&b.addRunArtifact(wire_tests).step);
 }

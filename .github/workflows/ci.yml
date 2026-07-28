@@ -94,17 +94,17 @@ jobs:
             # no entry point — anything that reaches std.process or std.Io's OS-backed
             # paths breaks this row and nothing else. Best early warning for §18.17.
 
-          # --- dark ------------------------------------------------------------
           - platform: ios
             target: aarch64-ios
-            host: macos-latest
-            status: dark
-            sysroot_sdk: iphoneos
-            # Fails as `unable to find libSystem system library`. Zig bundles macOS
-            # libSystem stubs but no iOS SDK, so this row needs Xcode's — hence the
-            # macOS runner and the --sysroot below. Whether that alone suffices, or
-            # whether framework search paths are also needed, is what this row is
-            # currently answering.
+            host: ubuntu-latest
+            status: green
+            # A static library, not an executable — an Xcode app target owns the entry
+            # point (docs/ARCHITECTURE.md §2). A static archive has no link step, so this
+            # needs no Apple SDK and no macOS runner: it builds from any host and is a
+            # continuous check that no platform SDK type has leaked into portable code
+            # (§18.9). Linking an iOS *executable* needs a --libc file, not --sysroot
+            # (ziglang/zig#19217) — see docs/CI_TIERS.md §4. Packaging, signing and
+            # launching are M0 criteria that no compile row can stand in for.
 
     steps:
       - uses: actions/checkout@v4
@@ -112,15 +112,7 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
       - name: build
-        shell: bash
-        run: |
-          args=(-Dtarget=${{ matrix.target }})
-          if [ -n "${{ matrix.sysroot_sdk }}" ]; then
-            sdk="$(xcrun --sdk ${{ matrix.sysroot_sdk }} --show-sdk-path)"
-            echo "using SDK: $sdk"
-            args+=(--sysroot "$sdk")
-          fi
-          zig build "${args[@]}"
+        run: zig build -Dtarget=${{ matrix.target }}
 
   # ---------------------------------------------------------------------------
   # Test — native execution only. Cross-built artifacts are not run here.

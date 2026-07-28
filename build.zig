@@ -12,12 +12,28 @@ pub fn build(b: *std.Build) void {
 
     const t = target.result;
     const is_wasm_freestanding = t.cpu.arch.isWasm() and t.os.tag == .freestanding;
+    const is_ios = t.os.tag == .ios;
+    const hosts_own_entry_point = is_wasm_freestanding or is_ios;
 
-    // The browser artifact is a module, not a program. Rooting it at src/main.zig
-    // pulls std.process.Init, which pulls std.Io.Threaded, which needs posix
-    // getrandom and IOV_MAX — none of which exist on freestanding wasm. See
-    // src/web.zig.
-    const exe = if (is_wasm_freestanding) blk: {
+    // Neither the browser nor an iOS app owns its own entry point, so neither target
+    // is an executable:
+    //
+    //   Web — a module the TypeScript bootstrap instantiates inside a Worker
+    //         (docs/ARCHITECTURE.md §2, §4.1). Rooting it at src/main.zig pulls
+    //         std.process.Init -> std.Io.Threaded -> posix.getrandom and IOV_MAX,
+    //         none of which exist on freestanding wasm. See src/web.zig.
+    //
+    //   iOS — a static library an Xcode app target links, with UIApplicationMain
+    //         living in a thin Objective-C TU (§2, §4.1). A static archive has no
+    //         link step, so it never needs libSystem at all. Linking an iOS
+    //         *executable* additionally requires a --libc file naming the SDK's
+    //         usr/include; --sysroot alone does not work (ziglang/zig#19217). CI
+    //         supplies that via ZIG_LIBC so the row stays honest once C or
+    //         Objective-C translation units appear.
+    //
+    // Building either as an executable would yield a green check for an artifact
+    // that cannot launch, which §18.20 exists to forbid.
+    const artifact = if (is_wasm_freestanding) blk: {
         const web = b.addExecutable(.{
             .name = "bedlam_engine",
             .root_module = b.createModule(.{
@@ -30,7 +46,15 @@ pub fn build(b: *std.Build) void {
         web.entry = .disabled;
         web.rdynamic = true;
         break :blk web;
-    } else b.addExecutable(.{
+    } else if (is_ios) b.addLibrary(.{
+        .name = "bedlam_engine",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    }) else b.addExecutable(.{
         .name = "bedlam_engine",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
@@ -40,25 +64,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Cross-compiling to a Darwin target needs the SDK's search paths wired
-    // explicitly. Zig bundles libSystem stubs for macOS — which is why
-    // aarch64-macos cross-compiles from any host with no Apple tooling — but has
-    // none for iOS, and it only auto-detects an SDK when the target OS is the
-    // native one. aarch64-ios from a macOS host is not native, so --sysroot is
-    // accepted and then resolves nothing on its own.
-    if (t.os.tag.isDarwin()) {
-        if (b.sysroot) |sysroot| {
-            exe.root_module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "usr", "lib" }) });
-            exe.root_module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System", "Library", "Frameworks" }) });
-            exe.root_module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "usr", "include" }) });
-        }
-    }
+    b.installArtifact(artifact);
 
-    b.installArtifact(exe);
-
-    // `zig build run` is meaningless for a module with no entry point.
-    if (!is_wasm_freestanding) {
-        const run_cmd = b.addRunArtifact(exe);
+    // `zig build run` is meaningless without an entry point.
+    if (!hosts_own_entry_point) {
+        const run_cmd = b.addRunArtifact(artifact);
         run_cmd.step.dependOn(b.getInstallStep());
         if (b.args) |args| run_cmd.addArgs(args);
 
@@ -72,6 +82,6 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{ .root_module = mod });
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
 
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    const artifact_tests = b.addTest(.{ .root_module = artifact.root_module });
+    test_step.dependOn(&b.addRunArtifact(artifact_tests).step);
 }

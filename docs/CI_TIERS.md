@@ -75,9 +75,20 @@ Rows are per target family in `ARCHITECTURE.md` §4.1. **Dark rows are present a
 | Android | ✅ cross | ⬛ | partial | emulator row; NDK for GameActivity surfaces |
 | Web (`wasm32-wasi`) | ✅ cross | ⬛ | partial | second wasm config, not the shipping target |
 | Web (`wasm32-freestanding`) | ✅ cross | ⬛ | partial | the shipping target; browser harness row pending |
-| **iOS** | ⬛ | ⬛ | **dark** | no iOS SDK; needs the `macos-latest` runner's Xcode |
+| iOS | ✅ cross (static lib) | ⬛ | partial | app bundle, signing and launch — see below |
 
-Verified locally against Zig 0.16.0: all seven build targets above compile clean from a Windows host with no SDKs installed. `aarch64-ios` is the only failing row, on `unable to find libSystem system library`.
+Verified locally against Zig 0.16.0: **all eight build targets compile clean from a Windows host with no platform SDKs installed**, including `aarch64-ios`. No row is dark.
+
+### Neither Web nor iOS is an executable
+
+Both targets have a host that owns the entry point, so both are built as something other than a program — see `build.zig`.
+
+- **Web** is rooted at `src/web.zig` with no entry point. A browser artifact is a module the TypeScript bootstrap instantiates (`ARCHITECTURE.md` §2). Rooting it at a CLI entry point pulls `std.process.Init` → `std.Io.Threaded` → `posix.getrandom` and `posix.IOV_MAX`, none of which exist on freestanding wasm.
+- **iOS** is a static library. An Xcode app target owns `UIApplicationMain`, which lives in a thin Objective-C TU (§2, §4.1). A static archive has no link step, so it needs no Apple SDK and no macOS runner — which is why this row builds from any host and costs nothing.
+
+Enforcing both structurally, by which artifact kind and root file the build graph selects, is deliberate. A conditional inside `main.zig` is something a later change can wander past.
+
+**Linking an iOS executable is a different problem, and `--sysroot` does not solve it.** Zig needs a `--libc` file naming the SDK's `usr/include` as both `include_dir` and `sys_include_dir`, with `crt_dir` and the rest blank — or the same file via the `ZIG_LIBC` environment variable. `--sysroot` is accepted and then silently prefixed onto library search paths, producing doubled paths and the same `unable to find libSystem system library` failure. Upstream: [ziglang/zig#19217](https://github.com/ziglang/zig/issues/19217), open since March 2024. Recorded here so it is not rediscovered when the first Objective-C translation unit lands.
 
 **The web row is rooted at `src/web.zig`, not `src/main.zig`.** A browser artifact is a module the TypeScript bootstrap instantiates (`ARCHITECTURE.md` §2), not a program with a `main()`. Rooting it at a CLI entry point pulls `std.process.Init`, which pulls `std.Io.Threaded`, which needs `posix.getrandom` and `posix.IOV_MAX` — none of which exist on freestanding wasm. Enforcing that structurally, by which file the artifact is rooted at, is deliberate: a conditional inside `main.zig` is something a later change can wander past, and §18.17 says the browser target is not an afterthought.
 
@@ -88,6 +99,8 @@ Verified locally against Zig 0.16.0: all seven build targets above compile clean
 - **Cross-ISA determinism.** `ARCHITECTURE.md` §7 requires fixed-point inside the rollback boundary, no FMA contraction, no fast-math, own polynomial transcendentals, and fixed-tree reductions. Nothing enforces any of that except running the same simulation on two ISAs and comparing per-tick hashes. The matrix above already provides x86_64 and aarch64 natively across three operating systems, which is the substrate. The row is blocked on `--verify-determinism` existing, not on hardware. **This is the highest-value job in Tier C and should land with the first tick loop, per `AGENTS.md` §3.**
 - **Schema and manifest checks.** All ten checks in `SCHEMA_AND_EVOLUTION.md` §10 are pure CPU and need no device, GPU, or network. Check 5 — fingerprint identical across platform targets — *requires* the multi-target matrix above and is the check that doc flags as catching the error that "looks like a netcode bug for weeks." Blocked on the manifest generator existing.
 - **Android emulator and iOS Simulator.** Cover lifecycle, suspend/resume, and device loss (`AGENTS.md` §4) without physical hardware. Neither produces a number.
+- **iOS app bundle — package, sign, install, launch.** The static-library row proves the portable core compiles for iOS. It proves nothing about whether an app runs, and must never be read as though it did. This needs the Objective-C entry TU, an `Info.plist`, entitlements, a signing identity, and a `macos-latest` runner with the `--libc` file above. It is an `AGENTS.md` §4 M0 exit criterion in its own right.
+- **Browser harness.** The web row compiles a module; nothing yet instantiates it under Worker + OffscreenCanvas + cross-origin isolation. Headless Chrome on a hosted runner has no GPU, so WebGPU would fall back to software — correctness only, never a number.
 
 ---
 

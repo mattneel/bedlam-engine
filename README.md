@@ -6,7 +6,40 @@ A multiplayer game engine for Windows, Linux, macOS, Android, iOS, and Web.
 
 The name states the design condition: 64 players, full destruction, vehicles, running on hardware that has no business running it. Bedlam, metered. Every hard decision here is about bounding chaos rather than avoiding it.
 
-**Status: specification. No implementation yet.** First work is M0, the platform spine — see `AGENTS.md` §4.
+**Status: M0 in progress.** The specification is complete and the platform spine is being
+built against it. What follows is what has been *run*, not what compiles — `ARCHITECTURE.md`
+§18.20 is explicit that a green build is not a working target, so every claim below has a
+command that demonstrates it.
+
+| M0 criterion | Where it holds |
+|---|---|
+| 1 · window and surface | Windows (Win32) · Linux (X11) · Web (OffscreenCanvas) |
+| 2 · input and text | Windows · Linux · Web (forwarded to the worker) |
+| 3 · audio device | Windows (WASAPI) · Linux (PulseAudio) · Web (AudioWorklet) |
+| 4 · network session | handshake, ack window and UDP transport — **no encryption yet** |
+| 5 · filesystem and assets | portable, capability-bounded |
+| 6 · suspend and resume | Windows · Linux |
+| 7 · device loss | Windows; Linux has no device-loss source until there is a renderer |
+| 8 · Worker + OffscreenCanvas | Web, verified in headless Chrome per commit |
+| 9 · crash capture | portable capture with build/schema/tick/seed context |
+| 10 · package | reproducible archive; **unsigned**, and no installer |
+
+None of the ten is *done*, because done means all six targets on physical devices. macOS,
+iOS and Android are compile-only — this machine has no Apple hardware and no NDK.
+
+```
+zig build test              # 325 tests
+scripts/check.ps1           # Windows + Linux + 8 target rows + browser + qemu + determinism
+zig build run -- --window --audio --net-demo --world-digest --crash-report
+```
+
+The engine underneath is further along than the platform layer: stable schema identity and
+a pinned compatibility fingerprint, generated wire codecs, a generational-entity world with
+CoW rollback pages, tick-keyed deterministic simulation, delta replication against
+acknowledged baselines, and a canonical world hash that agrees bit-for-bit across x86-64,
+aarch64, s390x, arm, mips and wasm32.
+
+First work is M0, the platform spine — see `AGENTS.md` §4.
 
 ---
 
@@ -79,13 +112,29 @@ docs/
   SPEC_DEFECTS.md      known defects, unresolved
 .github/workflows/
   ci.yml               Tier C matrix — one row per target, dark rows included
-build.zig              (M0)
+  SPEC_DEFECTS.md      known defects, and how each was resolved
+  UPSTREAM_FINDINGS.md toolchain behaviour the platform code works around
+build.zig              targets, cross gate, web and package steps
 build.zig.zon          package manifest
-src/                   portable engine
-platform/              per-target shims
-tools/                 content pipeline, schema generator
-test/                  including fuzz targets and determinism verification
+src/
+  schema/              stable IDs, manifest, compatibility fingerprint
+  wire/                bit reader/writer, quantization, generated codecs
+  world/               entities, chunks, archetypes, CoW pages, journal, hash
+  sim/                 tick-keyed RNG, step loop, determinism harness
+  net/                 session, baselines, snapshots, replication frames
+  audio/               SPSC command ring and the integer mixer (portable)
+platform/              per-target shims — nothing above this line may import them
+  windows/ linux/      window, input, audio device
+tools/
+  web/                 wasm harness, worker, AudioWorklet, browser check
+  package.zig          reproducible archive
+scripts/               check.ps1, cross.ps1, reproducible.ps1
 ```
+
+**`src/` never imports `platform/`.** That is §18.9 made structural rather than aspirational,
+and it is why the browser can run the same mixer and the same simulation as the desktop
+build. The `web` and `ios` build rows exist partly to keep it honest: neither can link a
+platform backend at all.
 
 ---
 

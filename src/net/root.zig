@@ -9,10 +9,12 @@
 
 pub const baseline = @import("baseline.zig");
 pub const session = @import("session.zig");
+pub const replicate = @import("replicate.zig");
 pub const snapshot = @import("snapshot.zig");
 
 test {
     _ = baseline;
     _ = session;
+    _ = replicate;
     _ = snapshot;
 }

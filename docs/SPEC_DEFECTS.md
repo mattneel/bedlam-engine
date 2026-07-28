@@ -2,7 +2,9 @@
 
 Findings from a full read of the specification set against Zig 0.16.0 and current platform behaviour, and what was done about each.
 
-**Status: 12 of 13 resolved in the spec. One deferred to measurement.**
+**Status: 14 of 15 resolved. One deferred to measurement.**
+
+Entries 1–13 came from reading the specification set. **14 and 15 came from implementation** — they are defects the documents could not have revealed, found by writing the replication path and asserting what it was supposed to produce.
 
 These entries touch benchmark parameters and gates, which `AGENTS.md` §5 places under stop-and-ask. They were resolved on the author's instruction to use judgement rather than escalate. §5's purpose is to stop a decision becoming invisible, not to stop it being made, so every change below records the reasoning that produced it and the alternatives rejected. **Reversing any of these should be a matter of disagreeing with the argument, not of reconstructing it.**
 
@@ -133,6 +135,72 @@ Severity is cost-to-discover-late.
 **Was:** claimed pinned and vendored; reality was a `minimum_zig_version` floor, nothing vendored, no `zig-quickjs-ng`, no per-module optimization enforcement, and stock `zig init` output.
 
 **Now:** §3 describes current state and marks the rest as intended. `.github/workflows/ci.yml` pins `ZIG_VERSION`. Whether to vendor the toolchain outright is still open, and is a real question rather than a defect — an unpinned compiler on a pre-1.0 language is a determinism hazard specifically because `--verify-determinism` compares hashes across builds.
+
+---
+
+## 14. Quantization could not represent exact zero, so resting objects drifted ✅
+
+**Found by implementation, not by reading.** `src/net/replicate.zig` asserted that a
+stationary entity replicates as stationary and it did not.
+
+**Was:** `wire/fixedquant.zig`'s `maxQuantized(bits)` returned `2^bits - 1`, using every
+code. `quantize` maps `[lo, hi]` onto `[0, limit]`, so a value lands exactly on a code iff
+`(v - lo) / (hi - lo) * limit` is an integer. Every spatial component uses a **symmetric**
+range — `[-512, 512]`, `[-1, 1]` — which puts zero at the midpoint, and the midpoint is a
+code only when `limit` is even. `2^bits - 1` never is.
+
+Measured on `[-512, 512]` at 16 bits: `Fixed.ZERO` round-tripped to `131074` raw — half a
+quantization step, ≈ 0.0078 units. Confirmed identical at 8, 10, 12 and 16 bits and on every
+symmetric range tried.
+
+**Why it mattered more than half a step sounds:** the error is *consistent*, not random. An
+object at rest replicates as moving at ≈ 0.0078 units/tick — about half a unit per second at
+§1's cadence — in a fixed direction, on every client, forever. It reads as a physics bug or
+a prediction bug, which is where the time would have gone looking for it.
+
+**Now:** `maxQuantized` returns `2^bits - 2`. Zero is exact on every symmetric range,
+verified at all widths.
+
+**Cost:** one unused code out of `2^bits` — at 16 bits, 0.0015% of the range. That is not a
+trade against precision; it is a rounding error against a correctness failure.
+
+**What did not change:** the schema fingerprint
+(`ca80a08a…`), the canonical world digest (`c52a5efc…`), the wasm32/native parity check, and
+every existing test in `wire/`. The change is to the *values* on the wire, not to the
+format, so `SCHEMA_AND_EVOLUTION.md`'s compatibility identity is untouched — but two peers
+built across this commit disagree about what a code means, so it is a **wire-behaviour break
+between unreleased builds**. Free now, expensive after a release.
+
+**Not fixed, and cannot be:** asymmetric ranges still do not represent zero exactly. No
+single uniform grid contains an arbitrary point. Symmetric is the case that matters because
+it is the case velocity uses, and velocity is where rest is meaningful.
+
+---
+
+## 15. The canonical world hash is a determinism instrument, not a replication one ✅
+
+**Was:** nothing in the docs said which. The natural reading of `world/hash.zig` — "two peers
+holding the same world produce the same digest" — invites the assertion that a client's
+digest equals its server's, and `src/net/replicate.zig` was first written with exactly that
+test.
+
+It is false by construction. The wire quantizes (§14), so a replica holds values that differ
+from the authority's by up to half a step. A server and its client are *supposed* to differ.
+
+**Now:** stated in `replicate.zig`, and the tests assert the properties that do hold:
+
+- **client vs client** — every replica of one authority holds a bit-identical world under
+  the canonical digest. This is the assertion with teeth: any nondeterminism in encode or
+  apply shows up here and nowhere else.
+- **replica of a replica** — the second hop is lossless, because quantization already
+  happened.
+- **quantization is a fixed point** — re-encoding an already-quantized value returns it
+  unchanged. Without this a replica would drift a little further every tick with nothing
+  reporting an error.
+
+**Why this is worth writing down:** the false assertion *passes* on a world of zeroes and
+fails on a world of real values, so it is the kind of test that gets written early, goes
+green, and is trusted.
 
 ---
 

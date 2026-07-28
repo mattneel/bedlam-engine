@@ -120,6 +120,52 @@ pub const Allocator = struct {
         self.live_count -= 1;
     }
 
+    /// The generation currently recorded for a slot, or null if it was never allocated.
+    ///
+    /// Note this says nothing about whether the slot is OCCUPIED: `free` bumps the
+    /// generation and leaves it recorded, so between a free and the next alloc this
+    /// returns the generation that is about to be handed out. Occupancy is the table's
+    /// question, not the allocator's.
+    pub fn generationAt(self: Allocator, index: u24) ?u8 {
+        if (index == 0 or index >= self.generations.items.len) return null;
+        const g = self.generations.items[index];
+        return if (g == 0) null else g;
+    }
+
+    /// Force a specific handle live. **Replica worlds only.**
+    ///
+    /// A client mirroring an authoritative world does not allocate its own handles: the
+    /// server names the entity, and the client's job is to hold the same world. A local
+    /// allocator producing its own handles would give the same object different identities
+    /// on the two peers, and `world/hash.zig` includes identity — so two peers in perfect
+    /// agreement about the world would report a desync.
+    ///
+    /// This is NOT §18.6's "durable ID derived from position". The handle is not derived
+    /// from anything; it is *transmitted*, and it is a runtime handle scoped to one session
+    /// rather than a durable identifier written to a save. `SCHEMA_AND_EVOLUTION.md`'s
+    /// stable IDs remain the only durable identity.
+    ///
+    /// **Makes no occupancy judgement, deliberately.** An earlier version refused when
+    /// `isLive` reported the slot taken, and it was wrong in a way that only appeared after
+    /// a hundred rounds of spawn and despawn: `free` bumps the generation *and leaves it
+    /// recorded*, so `isLive` returns true for the exact handle the allocator is about to
+    /// hand out next. The replica would then refuse the authority's spawn for a slot it had
+    /// itself just vacated. The table knows what is occupied; the allocator does not, and
+    /// pretending otherwise produced a divergence with no error attached to it.
+    pub fn adopt(self: *Allocator, gpa: std.mem.Allocator, e: Entity) !void {
+        std.debug.assert(!e.isNone());
+        try self.ensureSlotZero(gpa);
+
+        const index: u32 = e.index;
+        while (self.generations.items.len <= index) {
+            // Generation 0 means "never allocated", which is what an unmentioned slot is.
+            try self.generations.append(gpa, 0);
+            try self.next_free.append(gpa, 0);
+        }
+        self.generations.items[index] = e.generation;
+        self.live_count += 1;
+    }
+
     pub fn isLive(self: Allocator, e: Entity) bool {
         if (e.isNone()) return false;
         const index: u32 = e.index;

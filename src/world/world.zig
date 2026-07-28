@@ -80,6 +80,39 @@ pub fn World(comptime Columns: type, comptime budget: chunk_mod.Budget) type {
             return e;
         }
 
+        /// Spawn an entity the AUTHORITY named. **Replica worlds only.**
+        ///
+        /// See `entity.Allocator.adopt`. A replica must reproduce the server's handles or
+        /// `hash.zig` -- which includes identity -- reports a desync between two peers that
+        /// agree completely about the world.
+        ///
+        /// Returns false if the handle is already live here, which makes a repeated spawn
+        /// idempotent: a snapshot may legitimately re-describe an entity the client already
+        /// has, and treating that as an error would end the session over a duplicate.
+        pub fn spawnAt(self: *Self, e: Entity, values: Columns) !bool {
+            // Idempotent: a snapshot may legitimately re-describe an entity the client
+            // already has, and treating that as an error would end a session over a
+            // duplicate.
+            if (self.table.contains(e)) return false;
+
+            // The slot may still hold a previous occupant whose despawn never arrived —
+            // UDP does not promise delivery, and §12 does not retransmit snapshots. The
+            // authority naming a NEW generation for this index is itself the statement
+            // that the old one is gone, so evict rather than refuse: refusing leaves the
+            // replica holding an entity the authority deleted, forever.
+            if (self.entities.generationAt(e.index)) |g| {
+                const occupant: Entity = .{ .index = e.index, .generation = g };
+                if (!Entity.eql(occupant, e) and self.table.contains(occupant)) {
+                    _ = self.despawn(occupant);
+                }
+            }
+
+            try self.entities.adopt(self.gpa, e);
+            _ = try self.table.add(e, values);
+            self.journal.recordSpawn(e);
+            return true;
+        }
+
         pub fn despawn(self: *Self, e: Entity) bool {
             if (!self.table.remove(e)) return false;
             self.entities.free(e);

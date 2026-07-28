@@ -77,6 +77,39 @@ pub const Writer = struct {
         try self.writeBits(@intFromBool(v), 1);
     }
 
+    /// Overwrite bits already written, at an absolute bit offset.
+    ///
+    /// For a length or count that is not known until the payload is complete — a frame's
+    /// record count depends on how many records the budget allowed, and reserving a
+    /// maximum would waste the bits the budget exists to save.
+    ///
+    /// Clears the target bits before writing, unlike `writeBits`, which ORs into a buffer
+    /// it assumes is zeroed. Patching without clearing leaves the OR of the old and new
+    /// values, which for a count reads as a larger frame than was sent.
+    pub fn patchBits(self: *Writer, at: u64, value: u64, bits: u7) void {
+        std.debug.assert(bits <= max_bits);
+        std.debug.assert(at + bits <= self.bit_pos);
+        if (bits == 0) return;
+
+        var v = value & mask(bits);
+        var remaining: u7 = bits;
+        var pos = at;
+        while (remaining > 0) {
+            const byte_idx: usize = @intCast(pos >> 3);
+            const bit_off: u3 = @intCast(pos & 7);
+            const space: u7 = 8 - @as(u7, bit_off);
+            const take: u7 = @min(remaining, space);
+
+            const clear: u8 = @truncate(mask(take) << bit_off);
+            const chunk: u8 = @truncate((v & mask(take)) << bit_off);
+            self.buf[byte_idx] = (self.buf[byte_idx] & ~clear) | chunk;
+
+            v >>= @intCast(take);
+            remaining -= take;
+            pos += take;
+        }
+    }
+
     pub fn bitsWritten(self: Writer) u64 {
         return self.bit_pos;
     }

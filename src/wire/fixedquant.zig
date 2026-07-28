@@ -16,10 +16,32 @@
 const std = @import("std");
 const fpz = @import("fpz");
 
+/// Largest code a `bits`-wide field may carry.
+///
+/// **Even, not `2^bits - 1`, so that exact zero survives a round trip.**
+///
+/// The obvious value is `2^bits - 1`, which uses every code. It is wrong for this engine.
+/// `quantize` maps `[lo, hi]` onto `[0, limit]`, so a value lands exactly on a code iff
+/// `(v - lo) / (hi - lo) * limit` is an integer. For the symmetric ranges every spatial
+/// component uses — `[-512, 512]`, `[-1, 1]` — zero sits at the midpoint, and the midpoint
+/// is a code only when `limit` is EVEN. With `2^bits - 1` it never is.
+///
+/// Measured before the fix: on `[-512, 512]` at 16 bits, `Fixed.ZERO` round-trips to
+/// 131074 raw — half a quantization step, about 0.0078 units. A stationary object
+/// therefore replicates as moving, at roughly half a unit per second at §1's tick rate.
+/// Every resting entity in the world drifts, and it drifts *consistently*, so it reads as
+/// a physics bug rather than a wire bug.
+///
+/// The cost is one unused code out of `2^bits` — at 16 bits, 0.0015% of the range. That is
+/// not a trade; it is a rounding error against a correctness failure.
+///
+/// Asymmetric ranges still do not represent zero exactly, and cannot: no single grid
+/// contains an arbitrary point. Symmetric is the case that matters because it is the case
+/// velocity and offset use, and velocity is where rest is meaningful.
 pub fn maxQuantized(bits: u7) u64 {
     if (bits == 0) return 0;
-    if (bits >= 64) return std.math.maxInt(u64);
-    return (@as(u64, 1) << @intCast(bits)) - 1;
+    if (bits >= 64) return std.math.maxInt(u64) - 1;
+    return (@as(u64, 1) << @intCast(bits)) - 2;
 }
 
 /// Map a `Fixed` in `[lo, hi]` onto `bits` bits.

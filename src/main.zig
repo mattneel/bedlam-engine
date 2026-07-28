@@ -233,6 +233,25 @@ pub fn main(init: std.process.Init) !void {
                 bedlam.fpz.Fixed.ZERO,
             };
 
+            // Per-client send state. 16 snapshots in flight is well beyond a loopback
+            // round trip; on a real link it must exceed the RTT in ticks or `evicted`
+            // climbs and entities are re-sent for no visible reason.
+            const Out = bedlam.net.outbound.Outbound(Cols, 16, 128);
+            var outbound = try Out.init(gpa);
+            defer outbound.deinit();
+
+            var it0 = world.table.chunkIterator();
+            while (it0.next()) |c| {
+                for (c.liveEntities()) |ent| try outbound.setInterest(ent, true);
+            }
+
+            // Which packet sequence carried which snapshot. The session's ack window is in
+            // sequence space and the baseline is in snapshot space, so something has to
+            // hold the correspondence — this is that, sized to the in-flight ring.
+            var seq_of: [16]u32 = @splat(0);
+            var snap_live: [16]bool = @splat(false);
+            var snap_id: [16]u64 = @splat(0);
+
             const ticks = 240;
             var frames_sent: u32 = 0;
             var frames_applied: u32 = 0;
@@ -244,51 +263,13 @@ pub fn main(init: std.process.Init) !void {
                 replica.advanceTick();
                 reference.advanceTick();
 
-                // Assemble one frame. The datagram budget is what decides how many
-                // entities fit, which is exactly §4.1's arithmetic doing its job.
+                // Assemble a DELTA snapshot. Only entities whose values differ from what
+                // this client has acknowledged, ordered by accumulated priority so a
+                // budget too small for the world starves nobody.
                 var bw = bedlam.wire.bits.Writer.init(&frame_buf);
                 var fw = try bedlam.net.replicate.Writer.begin(&bw, world.tick, frames_sent);
-
-                // Gather, then iterate from a rotating offset.
-                //
-                // 64 Transforms do not fit in one 1200-byte datagram — §4.1's arithmetic
-                // says about 180 per 1500 bytes only when nothing else shares the packet,
-                // and the session header and record prefixes are not nothing. Iterating
-                // from index 0 every frame therefore drops the SAME entities forever, and
-                // the replica settles at 62 of 64 with no error anywhere.
-                //
-                // `snapshot.zig`'s priority accumulator is the real answer: a deferred
-                // entity's priority rises until it is sent. This rotation is the crude
-                // stand-in, used because the scheduler is coupled to the acked-delta path
-                // this demo deliberately does not use yet. Naming it as a stand-in matters
-                // — a rotation is fair but not *prioritised*, and §12 wants the latter.
-                var handles: [512]bedlam.world.entity.Entity = undefined;
-                var live_n: usize = 0;
-                var it = world.table.chunkIterator();
-                while (it.next()) |c| {
-                    for (c.liveEntities()) |ent| {
-                        if (live_n < handles.len) {
-                            handles[live_n] = ent;
-                            live_n += 1;
-                        }
-                    }
-                }
-
-                outer: {
-                    for (0..live_n) |k| {
-                        const ent = handles[(k + frames_sent * 8) % live_n];
-                        var cols: Cols = undefined;
-                        inline for (@typeInfo(Cols).@"struct".fields) |f| {
-                            @field(cols, f.name) = world.table.get(ent, f.name).?;
-                        }
-                        const values = bedlam.net.replicate.projectFor(decl, Cols, cols, ident);
-                        const cost = bedlam.net.replicate.Writer.recordCost(
-                            comptime bedlam.wire.codec.componentBits(decl),
-                        );
-                        if ((bw.bitsWritten() + cost + 7) / 8 + sess.Header.size > sess.max_datagram) break :outer;
-                        try fw.writeUpdate(decl, ent, values, full_mask_demo);
-                    }
-                }
+                const budget = sess.max_datagram - sess.Header.size - 32;
+                const snap = try outbound.assemble(decl, &world, &fw, budget, 1, ident);
                 fw.finish();
                 const frame = frame_buf[0..bw.bytesWritten()];
 
@@ -296,9 +277,16 @@ pub fn main(init: std.process.Init) !void {
                 var ref_reader = bedlam.wire.bits.Reader.init(frame);
                 _ = try bedlam.net.replicate.apply(decl, Cols, &reference, &ref_reader, ident, defaults);
 
+                // Record the sequence this snapshot rides on, BEFORE writeData consumes it.
+                const seq = server.next_sequence;
                 const sn = server.writeData(frame, &pkt) catch continue;
                 _ = server_rx.send(client_addr.?, pkt[0..sn]);
                 frames_sent += 1;
+
+                const ring: usize = @intCast(snap % 16);
+                seq_of[ring] = seq;
+                snap_id[ring] = snap;
+                snap_live[ring] = true;
 
                 var drained: u32 = 0;
                 while (drained < 8) : (drained += 1) {
@@ -316,12 +304,25 @@ pub fn main(init: std.process.Init) !void {
                 while (server_rx.poll()) |d| {
                     _ = server.receive(d.bytes, &out_buf) catch continue;
                 }
+
+                // The whole point: the session's ack window says which sequences arrived,
+                // and only those snapshots promote the baseline. A snapshot the client
+                // never received must NOT advance it, or every later delta is computed
+                // against state that exists nowhere.
+                for (0..16) |k| {
+                    if (!snap_live[k]) continue;
+                    if (server.peerAcked(seq_of[k])) {
+                        _ = outbound.onAck(snap_id[k]) catch {};
+                        snap_live[k] = false;
+                    }
+                }
             }
 
-            // Drain whatever is still in flight, so the comparison is of two settled
-            // worlds rather than of a race.
+            // Drain and settle, so the comparison is of two finished worlds rather than a
+            // race. Deltas mean a straggler leaves the replica genuinely behind, which is
+            // the honest cost of not sending full state.
             var settle: u32 = 0;
-            while (settle < 100_000 and frames_applied < frames_sent) : (settle += 1) {
+            while (settle < 200_000 and frames_applied < frames_sent) : (settle += 1) {
                 if (client_rx.poll()) |d| {
                     const got = client.receive(d.bytes, &out_buf) catch continue;
                     if (got == .data) {
@@ -361,6 +362,13 @@ pub fn main(init: std.process.Init) !void {
             // that did not. The authority differs from both, and must — the wire quantizes.
             try out.print("  over-wire == in-process  {}\n", .{std.mem.eql(u8, &d_replica, &d_reference)});
             try out.print("  quantized (expected)     {}\n", .{!std.mem.eql(u8, &d_authority, &d_replica)});
+            try out.print("  snapshots    {d} sent / {d} acked\n", .{
+                outbound.stats.snapshots_sent, outbound.stats.snapshots_acked,
+            });
+            try out.print("  records      {d} sent / {d} deferred\n", .{
+                outbound.stats.records_sent, outbound.stats.deferred,
+            });
+            try out.print("  evicted      {d} (ring smaller than RTT if nonzero)\n", .{outbound.stats.evicted});
             try out.print("  acked        {d}\n", .{server.acked_by_peer});
             try out.print("  duplicates   {d}\n", .{server.duplicates + client.duplicates});
             try out.print("  overruns     {d}\n", .{server_rx.overruns.load(.monotonic) +

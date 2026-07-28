@@ -43,6 +43,17 @@ pub const audio_backend: ?type = switch (builtin.os.tag) {
     else => null,
 };
 
+/// The datagram transport, or `null` where the target has no sockets.
+///
+/// Optional for the same reason `audio_backend` is, plus a harder one: `std.net` does not
+/// exist on `freestanding`, so this is not merely unimplemented on wasm32 — it is
+/// unbuildable, and the browser's transport is WebTransport rather than a socket anyway.
+/// `src/net/session.zig` is transport-agnostic precisely so that this can be null.
+pub const udp_backend: ?type = switch (builtin.os.tag) {
+    .windows, .linux, .macos, .ios => @import("udp.zig"),
+    else => null,
+};
+
 comptime {
     // The contract, checked at the boundary. A backend that drifts fails here, naming
     // itself, rather than at a call site in main.zig naming a target nobody was building.
@@ -58,4 +69,5 @@ test {
     _ = lifecycle;
     _ = backend;
     if (audio_backend) |a| _ = a;
+    if (udp_backend) |u| _ = u;
 }

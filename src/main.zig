@@ -10,6 +10,13 @@ const std = @import("std");
 const Io = std.Io;
 const bedlam = @import("bedlam_engine");
 
+/// The session's fingerprint field is the 64 hex characters `manifest.fingerprint` already
+/// produces. Copied rather than re-derived so the value on the wire is provably the same
+/// one this binary reports.
+fn fp64(hex: *const [64]u8) [64]u8 {
+    return hex.*;
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.arena.allocator();
     const io = init.io;
@@ -89,6 +96,157 @@ pub fn main(init: std.process.Init) !void {
             try out.print("  events       {d}\n", .{events});
             try out.print("  size         {d}x{d}\n", .{ surface.size.width, surface.size.height });
             try out.print("  closed       {}\n", .{surface.closed});
+            try out.flush();
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--net-demo")) {
+            // M0 criterion 4, demonstrated rather than asserted. §18.20: compiling is not
+            // a working target. Two real sockets, two real receiver threads, a real
+            // handshake with address validation, and real snapshot bytes over loopback.
+            //
+            // What this does NOT demonstrate is encryption. §18.13 forbids custom crypto
+            // and no vetted stack is wired in, so `Crypto` is null and the server does not
+            // set `require_secure`. That is a stated gap, not an oversight — see
+            // src/net/session.zig.
+            const plat = @import("bedlam_platform");
+            const sess = bedlam.net.session;
+            try out.print("\nnet-demo\n", .{});
+
+            const Udp = plat.udp_backend orelse {
+                try out.print("  no datagram transport for this target\n", .{});
+                try out.flush();
+                continue;
+            };
+            const Receiver = Udp.Receiver(256);
+
+            var server_rx = Receiver.init(gpa, io, Udp.Pair.bind(io, 0) catch {
+                try out.print("  could not bind server socket\n", .{});
+                try out.flush();
+                continue;
+            });
+            try server_rx.start();
+            defer server_rx.stop();
+
+            var client_rx = Receiver.init(gpa, io, try Udp.Pair.bind(io, 0));
+            try client_rx.start();
+            defer client_rx.stop();
+
+            const server_sock = server_rx.pair.ip4 orelse {
+                try out.print("  no IPv4 socket bound\n", .{});
+                try out.flush();
+                continue;
+            };
+            const server_addr: Udp.Address = .{ .ip4 = .loopback(server_sock.port()) };
+
+            // Connection ids are chosen by each side, not derived. A real server draws
+            // these from a CSPRNG — a guessable id lets an off-path attacker inject into
+            // a session it cannot observe. Fixed here so the demo output is readable.
+            var client = sess.Session.init(0x0C11E27, fp64(&fp), .{});
+            var server = sess.Session.init(0x5E4E40D, fp64(&fp), .{});
+
+            const secret: [32]u8 = @splat(0x5A);
+            var pkt: [sess.max_datagram]u8 = undefined;
+            var out_buf: [sess.max_datagram]u8 = undefined;
+
+            var retries: u32 = 0;
+            var client_addr: ?Udp.Address = null;
+
+            // --- handshake, with address validation on ---
+            var n = client.clientHello(&pkt, @splat(0));
+            _ = client_rx.send(server_addr, pkt[0..n]);
+
+            var spins: u32 = 0;
+            while (!client.isEstablished() and spins < 2_000_000) : (spins += 1) {
+                if (server_rx.poll()) |d| {
+                    client_addr = d.from;
+                    var key: [18]u8 = undefined;
+                    const token = sess.retryToken(secret, Udp.Socket.peerKey(d.from, &key));
+
+                    const verdict = server.serverEvaluate(d.bytes, token, true) catch continue;
+                    switch (verdict) {
+                        .retry => |t| {
+                            retries += 1;
+                            const rn = server.writeRetry(t, &pkt);
+                            _ = server_rx.send(d.from, pkt[0..rn]);
+                        },
+                        .accept => |hello| {
+                            const an = server.serverAccept(hello, &pkt);
+                            _ = server_rx.send(d.from, pkt[0..an]);
+                        },
+                        .reject => |r| {
+                            const rn = server.writeReject(r, &pkt);
+                            _ = server_rx.send(d.from, pkt[0..rn]);
+                        },
+                    }
+                }
+                if (client_rx.poll()) |d| {
+                    if (client.clientReceive(d.bytes) catch null) |token| {
+                        n = client.clientHello(&pkt, token);
+                        _ = client_rx.send(server_addr, pkt[0..n]);
+                    }
+                }
+            }
+
+            if (!client.isEstablished()) {
+                try out.print("  handshake did not complete\n", .{});
+                try out.flush();
+                continue;
+            }
+
+            // --- steady state: snapshots one way, acks the other ---
+            const ticks = 240;
+            var delivered: u32 = 0;
+            var payload: [256]u8 = undefined;
+
+            for (0..ticks) |tick| {
+                std.mem.writeInt(u64, payload[0..8], tick, .little);
+                const sn = server.writeData(&payload, &pkt) catch continue;
+                _ = server_rx.send(client_addr.?, pkt[0..sn]);
+
+                // Drain both ends, which is what a frame loop does: a bounded number of
+                // ring pops, no syscall, no wait.
+                var drained: u32 = 0;
+                while (drained < 16) : (drained += 1) {
+                    if (client_rx.poll()) |d| {
+                        const got = client.receive(d.bytes, &out_buf) catch continue;
+                        if (got == .data) {
+                            delivered += 1;
+                            // The client's next packet carries the ack the server needs.
+                            const cn = client.writePing(&pkt) catch continue;
+                            _ = client_rx.send(server_addr, pkt[0..cn]);
+                        }
+                    } else break;
+                }
+                while (server_rx.poll()) |d| {
+                    _ = server.receive(d.bytes, &out_buf) catch continue;
+                }
+            }
+
+            // Captured BEFORE the orderly close, because `bye` moves both ends to
+            // `ended` and reporting after it would show a session that never established.
+            const both_up = client.isEstablished() and server.isEstablished();
+
+            const bn = client.writeBye(&pkt);
+            _ = client_rx.send(server_addr, pkt[0..bn]);
+
+            // Let the server observe the close, so the reported end state is the real one.
+            var settle: u32 = 0;
+            while (settle < 200_000 and server.state != .ended) : (settle += 1) {
+                if (server_rx.poll()) |d| _ = server.receive(d.bytes, &out_buf) catch {};
+            }
+
+            try out.print("  server       {f}\n", .{server_addr});
+            try out.print("  retries      {d}\n", .{retries});
+            try out.print("  established  {}\n", .{both_up});
+            try out.print("  sent         {d} snapshots\n", .{ticks});
+            try out.print("  delivered    {d}\n", .{delivered});
+            try out.print("  acked        {d}\n", .{server.acked_by_peer});
+            try out.print("  duplicates   {d}\n", .{server.duplicates + client.duplicates});
+            try out.print("  overruns     {d}\n", .{server_rx.overruns.load(.monotonic) +
+                client_rx.overruns.load(.monotonic)});
+            try out.print("  closed       {t} / {t}\n", .{ client.state, server.state });
+            try out.print("  encrypted    {} (§18.13: no vetted stack wired in yet)\n", .{client.crypto != null});
             try out.flush();
             continue;
         }

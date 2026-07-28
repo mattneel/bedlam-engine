@@ -109,6 +109,35 @@ test "Transform fits the per-entity budget from BENCHMARK_CONTRACT §4.1" {
     try std.testing.expectEqual(@as(usize, 113), comptime codec.componentBits(Transform));
 }
 
+test "Q16_16 conversion is identical on every architecture" {
+    // The critical one. Unguarded, `@intFromFloat` out of range is illegal behaviour and
+    // the targets disagree: x86_64's cvttss2si yields INT_MIN for overflow AND NaN,
+    // while aarch64's fcvtas and wasm32's trunc_sat both saturate to INT_MAX. So
+    // fromFloat(32768.0) was -32768.0 on a desktop host and +32767.99998 on a phone or a
+    // browser — a guaranteed desync in the ONE type ARCHITECTURE.md §7 designates for
+    // the rollback boundary, whose entire purpose is that floats do not agree.
+    //
+    // These expectations are architecture-independent by construction: every input is
+    // clamped in the float domain before conversion, so there is no illegal case left.
+    const Q = codec.Q16_16;
+
+    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), Q.fromFloat(32768.0).raw);
+    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), Q.fromFloat(1e30).raw);
+    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), Q.fromFloat(-40000.0).raw);
+    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), Q.fromFloat(-1e30).raw);
+    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), Q.fromFloat(std.math.inf(f32)).raw);
+    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), Q.fromFloat(-std.math.inf(f32)).raw);
+
+    // In range, the value is exact.
+    try std.testing.expectEqual(@as(i32, 87 * 65536 + 16384), Q.fromFloat(87.25).raw);
+    try std.testing.expectApproxEqAbs(@as(f32, -1234.5), Q.fromFloat(-1234.5).toFloat(), 0.0001);
+
+    // And saturation is monotone rather than wrapping, so a clamped value stays on the
+    // side it came from — the failure that made x86_64 and aarch64 disagree in sign.
+    try std.testing.expect(Q.fromFloat(1e30).toFloat() > 0);
+    try std.testing.expect(Q.fromFloat(-1e30).toFloat() < 0);
+}
+
 test "fixed-point survives the wire exactly" {
     // Unlike quantized floats, q16_16 is inside the rollback boundary (§7) and must be
     // exact — a lossy round trip there is a desync, not a visual artifact.

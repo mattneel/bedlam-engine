@@ -25,13 +25,50 @@ pub const Q16_16 = struct {
     raw: i32,
 
     pub const one: Q16_16 = .{ .raw = 1 << 16 };
+    /// Representable range: [-32768, +32768).
+    pub const min_value: f32 = -32768.0;
+    pub const max_value: f32 = 32767.99998474121;
 
+    /// **The conversion is clamped explicitly, and that is not defensive style — it is
+    /// the difference between this type working and this type desyncing the session.**
+    ///
+    /// `@intFromFloat` is illegal behaviour when the value does not fit the destination,
+    /// and the three architectures disagree about what illegal means:
+    ///
+    ///   x86_64  `cvttss2si` returns the "integer indefinite" 0x80000000 for both
+    ///           out-of-range and NaN — so 32768.0 becomes -32768.0.
+    ///   aarch64 `fcvtas` saturates to INT_MAX / INT_MIN and returns 0 for NaN.
+    ///   wasm32  `i32.trunc_sat_f32_s` saturates, and returns 0 for NaN.
+    ///
+    /// So an unguarded `fromFloat(32768.0)` yields -32768.0 on a desktop host and
+    /// +32767.99998 on a phone or a browser. `ARCHITECTURE.md` §7 designates fixed point
+    /// as the type that survives inside the rollback boundary *precisely because* floats
+    /// do not agree across x86, ARM, and wasm32 — a fixed-point constructor that inherits
+    /// float divergence defeats the only reason the type exists.
+    ///
+    /// NaN asserts rather than clamping: this is the encode side, operating on our own
+    /// simulation state, where a NaN is a physics blow-up upstream and silence is the
+    /// worst possible response. Out-of-range clamps, because saturating a health value is
+    /// recoverable and a cross-architecture disagreement is not.
     pub fn fromFloat(v: f32) Q16_16 {
-        return .{ .raw = @intFromFloat(@round(v * 65536.0)) };
+        std.debug.assert(!std.math.isNan(v));
+        // f64 throughout: f32 cannot represent every i32, so rounding at the boundary in
+        // f32 would reintroduce the same class of edge case this guard exists to remove.
+        const scaled = @round(@as(f64, v) * 65536.0);
+        const clamped = std.math.clamp(
+            scaled,
+            @as(f64, std.math.minInt(i32)),
+            @as(f64, std.math.maxInt(i32)),
+        );
+        return .{ .raw = @intFromFloat(clamped) };
     }
+
     pub fn toFloat(self: Q16_16) f32 {
         return @as(f32, @floatFromInt(self.raw)) / 65536.0;
     }
+
+    /// Wrapping, and deliberately so: two's complement wraparound is identical on every
+    /// target, whereas a trap would be a divergence between safety and release builds.
     pub fn add(a: Q16_16, b: Q16_16) Q16_16 {
         return .{ .raw = a.raw +% b.raw };
     }
@@ -98,8 +135,27 @@ pub fn fieldBits(comptime f: d.Field) u7 {
         },
         .blob => @compileError("blob field '" ++ f.name ++
             "' is variable-length and has no fixed bit width; blobs belong on bulk_content, not in a snapshot"),
-        else => @intCast(f.wire.wireBits() orelse
-            @compileError("field '" ++ f.name ++ "' has no fixed wire width")),
+        else => blk: {
+            // A quantization policy declared on a wire type that cannot honour it is a
+            // build error, not a no-op. Otherwise the declaration says the field is
+            // 10-bit bounded, the codec writes a full 32-bit float, and
+            // `SCHEMA_AND_EVOLUTION.md` §1's "the declaration is the single source of
+            // truth" is false while this file's header still claims encoder and decoder
+            // "are derived from the same source".
+            //
+            // Worse, the manifest DOES fold the ignored policy into the fingerprint
+            // (§4 covers quantization policy), so two builds differing only in a policy
+            // neither of them applies would refuse to connect while being byte-identical
+            // on the wire.
+            if (f.quant != .none) {
+                @compileError("field '" ++ f.name ++ "' declares a quantization policy, but wire type '" ++
+                    @tagName(f.wire) ++ "' does not quantize. Use vec3_quantized or " ++
+                    "quat_smallest_three, or drop the policy — a declared policy that is " ++
+                    "silently ignored still changes the compatibility fingerprint.");
+            }
+            break :blk @intCast(f.wire.wireBits() orelse
+                @compileError("field '" ++ f.name ++ "' has no fixed wire width"));
+        },
     };
 }
 

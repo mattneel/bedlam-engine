@@ -36,6 +36,15 @@ pub fn maxQuantized(bits: u7) u64 {
 /// the final `@min` covers the rest.
 pub fn quantize(value: f32, bits: u7, min: f32, max: f32) u64 {
     std.debug.assert(max > min);
+
+    // Encode side, so this asserts. `std.math.clamp(NaN, min, max)` evaluates to `max`
+    // under Zig's minnum/maxnum semantics, which would replicate a NaN position as the
+    // map corner on every client with the server never learning — the undebuggable case
+    // wearing the debuggable case's clothes. A physics blow-up producing NaN is the
+    // ordinary way this happens, and the fuzz target cannot catch it because it only
+    // exercises decode.
+    std.debug.assert(!std.math.isNan(value));
+
     const limit = maxQuantized(bits);
     const steps: f64 = @floatFromInt(limit);
 
@@ -43,8 +52,21 @@ pub fn quantize(value: f32, bits: u7, min: f32, max: f32) u64 {
     const normalized: f64 = (@as(f64, clamped) - @as(f64, min)) / (@as(f64, max) - @as(f64, min));
     // +0.5 then floor, rather than @round, so the tie-breaking rule is explicit in the
     // source and identical on every target.
+    // Saturate at the ends BEFORE any conversion, rather than clamping the float and
+    // converting. At bits = 64 `steps` is 2^64 (f64 cannot represent maxInt(u64) and
+    // rounds up), so the scaled value can reach 2^64 — out of range for u64, which is
+    // illegal behaviour and panics in ReleaseSafe. A later `@min` cannot help, because
+    // the conversion has already happened. Clamping the float instead would be safe but
+    // wrong: it would cap full scale below `limit`, so a maximal input would no longer
+    // encode to the maximal code.
+    if (normalized >= 1.0) return limit;
+    if (normalized <= 0.0) return 0;
+
     const scaled: f64 = @floor(normalized * steps + 0.5);
-    return @min(limit, @as(u64, @intFromFloat(@max(0.0, scaled))));
+    // Rounding can still push an in-range normalized value up to `steps` itself.
+    if (scaled >= steps) return limit;
+
+    return @min(limit, @as(u64, @intFromFloat(scaled)));
 }
 
 pub fn dequantize(q: u64, bits: u7, min: f32, max: f32) f32 {
@@ -307,6 +329,79 @@ test "encoder and decoder agree on the sign convention" {
     var dot: f32 = 0;
     for (0..4) |i| dot += q[i] * out[i];
     try std.testing.expect(dot < -0.99); // opposite sign, same rotation
+}
+
+test "quantize is total over every documented width" {
+    // bits.max_bits documents 64 as supported. At 64, `steps` is 2^64 (f64 cannot
+    // represent maxInt(u64) and rounds up), so the scaled value reaches 2^64 — out of
+    // range for u64, which is illegal behaviour and panics in ReleaseSafe. The @min
+    // afterwards cannot help, because the conversion happens first.
+    inline for ([_]u7{ 0, 1, 2, 31, 32, 33, 52, 53, 54, 62, 63, 64 }) |bits| {
+        for ([_]f32{ -1e30, -1, -0.5, 0, 0.5, 1, 1e30 }) |v| {
+            const q = quantize(v, bits, -1, 1);
+            try std.testing.expect(q <= maxQuantized(bits));
+        }
+        // And the endpoints specifically, which is where the overflow lived.
+        try std.testing.expectEqual(maxQuantized(bits), quantize(1, bits, -1, 1));
+        try std.testing.expectEqual(@as(u64, 0), quantize(-1, bits, -1, 1));
+    }
+}
+
+test "quaternion encoding is deterministic for identical input" {
+    // The property the replication layer actually depends on: the same authoritative
+    // float state must produce the same bits every snapshot, or a stationary entity
+    // emits a delta forever against a budget §4 calls the binding constraint.
+    //
+    // Note this is NOT the same as encode(decode(bits)) == bits. Smallest-three has no
+    // fixed point near four-way ties: quantization can make the reconstructed component
+    // smaller than a transmitted one, so re-encoding picks a different `largest` index
+    // and the pair oscillates with period 2. The rotation is preserved either way. The
+    // rule that follows is that the replication layer encodes from authoritative state,
+    // never from a decoded value — see the note in dequantizeQuat.
+    const bits: u7 = 9;
+    var prng = std.Random.DefaultPrng.init(0xDE7E4);
+    const rand = prng.random();
+
+    for (0..5000) |_| {
+        var q: [4]f32 = undefined;
+        var norm: f32 = 0;
+        for (&q) |*c| {
+            c.* = rand.float(f32) * 2 - 1;
+            norm += c.* * c.*;
+        }
+        norm = @sqrt(norm);
+        if (norm < 1e-6) continue;
+        for (&q) |*c| c.* /= norm;
+
+        const first = quantizeQuat(q, bits);
+        const second = quantizeQuat(q, bits);
+        try std.testing.expectEqual(first.largest, second.largest);
+        try std.testing.expectEqual(first.a, second.a);
+        try std.testing.expectEqual(first.b, second.b);
+        try std.testing.expectEqual(first.c, second.c);
+    }
+}
+
+test "repeated decode/encode preserves the rotation even where the bits oscillate" {
+    // Bounds the known non-canonicality: the bit pattern may flip between two encodings,
+    // but the rotation it denotes must not drift. If it drifted, a relayed or migrated
+    // entity would slowly rotate on its own.
+    const bits: u7 = 9;
+    var state: QuantizedQuat = .{ .largest = 0, .a = 0, .b = 245, .c = 245 };
+    const original = dequantizeQuat(state, bits);
+
+    for (0..16) |_| {
+        const decoded = dequantizeQuat(state, bits);
+        var dot: f32 = 0;
+        for (0..4) |i| dot += original[i] * decoded[i];
+        try std.testing.expect(@abs(dot) > 0.99);
+
+        var norm: f32 = 0;
+        for (decoded) |c| norm += c * c;
+        try std.testing.expectApproxEqAbs(@as(f32, 1.0), norm, 0.01);
+
+        state = quantizeQuat(decoded, bits);
+    }
 }
 
 test "wide widths do not overflow their field" {

@@ -11,6 +11,17 @@ pub fn build(b: *std.Build) void {
     const world_mod = m.world;
     const sim_mod = m.sim;
     const net_mod = m.net;
+    // Platform shims. ARCHITECTURE.md §4.1 and AGENTS.md §4's M0 criteria.
+    //
+    // Deliberately NOT imported by src/root.zig: §18.9 forbids platform SDK types in
+    // portable code, and the dependency running one way is what makes that structural
+    // rather than aspirational.
+    const platform_mod = b.addModule("bedlam_platform", .{
+        .root_source_file = b.path("platform/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const t = target.result;
     const is_wasm_freestanding = t.cpu.arch.isWasm() and t.os.tag == .freestanding;
     const is_ios = t.os.tag == .ios;
@@ -61,7 +72,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "bedlam_engine", .module = mod }},
+            .imports = &.{
+                .{ .name = "bedlam_engine", .module = mod },
+                // main.zig is the platform entry point, so it may see the platform layer.
+                // src/root.zig may not — §18.9, and the dependency running one way is
+                // what makes that structural.
+                .{ .name = "bedlam_platform", .module = platform_mod },
+            },
         }),
     });
 
@@ -149,6 +166,9 @@ pub fn build(b: *std.Build) void {
 
     const wire_tests = b.addTest(.{ .root_module = wire_mod });
     test_step.dependOn(&b.addRunArtifact(wire_tests).step);
+
+    const platform_tests = b.addTest(.{ .root_module = platform_mod });
+    test_step.dependOn(&b.addRunArtifact(platform_tests).step);
 
     const sim_tests = b.addTest(.{ .root_module = sim_mod });
     test_step.dependOn(&b.addRunArtifact(sim_tests).step);

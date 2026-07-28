@@ -167,6 +167,24 @@ pub fn build(b: *std.Build) void {
     web_wasm.entry = .disabled;
     web_wasm.rdynamic = true;
 
+    // Assets the `--serve` host embeds.
+    //
+    // The wasm comes from the build graph rather than from `tools/web/`, so the served
+    // module is always the one this build produced. Reading it off disk would let a stale
+    // file ship inside a fresh server, and the symptom would be a schema-fingerprint
+    // mismatch at the handshake — correct behaviour reporting a deployment mistake that
+    // should be impossible to make.
+    //
+    // Passed as modules because `@embedFile` refuses paths outside the importing module.
+    if (!hosts_own_entry_point) {
+        artifact.root_module.addImport("editor_html", b.createModule(.{
+            .root_source_file = b.path("tools/web/editor.html"),
+        }));
+        artifact.root_module.addImport("editor_wasm", b.createModule(.{
+            .root_source_file = web_wasm.getEmittedBin(),
+        }));
+    }
+
     const install_wasm = b.addInstallFileWithDir(
         web_wasm.getEmittedBin(),
         .{ .custom = "../tools/web" },

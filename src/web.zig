@@ -86,6 +86,152 @@ export fn bedlamLiveCount() u32 {
     return s.liveCount();
 }
 
+// --- net: the browser as a replication client -------------------------------
+//
+// **The protocol runs in Zig here, not in JavaScript.** `src/net/session.zig` and
+// `src/net/replicate.zig` are compiled into this module, so the browser performs the same
+// handshake, the same ack accounting and the same delta application as a native client.
+// A JS reimplementation would be a second implementation of the one thing §7 says must not
+// vary, and the first divergence would present as a desync nobody could localise.
+//
+// JavaScript owns exactly one thing: moving bytes over the WebSocket. It writes into
+// `net_in`, calls `bedlamNetFeed`, and sends whatever `bedlamNetOut` reports.
+
+var client_session: ?bedlam.net.session.Session = null;
+var replica: ?step.Sim = null;
+
+var net_in: [bedlam.net.session.max_datagram]u8 = undefined;
+var net_out: [bedlam.net.session.max_datagram]u8 = undefined;
+var net_out_len: u32 = 0;
+var net_payload: [bedlam.net.session.max_datagram]u8 = undefined;
+
+var net_applied: u32 = 0;
+var net_frames: u32 = 0;
+
+export fn bedlamNetInBuf() u32 {
+    return @intFromPtr(&net_in);
+}
+export fn bedlamNetOut() u32 {
+    return @intFromPtr(&net_out);
+}
+export fn bedlamNetOutLen() u32 {
+    return net_out_len;
+}
+export fn bedlamNetFramesApplied() u32 {
+    return net_applied;
+}
+export fn bedlamNetEntities() u32 {
+    const r = replica orelse return 0;
+    return r.liveCount();
+}
+
+/// 0 closed · 1 handshaking · 2 validating · 3 established · 4 ended
+export fn bedlamNetState() u32 {
+    const c = client_session orelse return 0;
+    return switch (c.state) {
+        .closed => 0,
+        .handshaking => 1,
+        .validating => 2,
+        .established => 3,
+        .ended => 4,
+    };
+}
+
+/// Start a session and emit the opening hello.
+///
+/// The fingerprint is this module's own, so a page served beside a stale wasm is refused at
+/// the handshake rather than decoding snapshots under a layout that does not match them —
+/// which is the whole reason `SCHEMA_AND_EVOLUTION.md` §10 puts it in the hello.
+export fn bedlamNetConnect() i32 {
+    const fp = bedlam.schema.manifest.fingerprint(
+        fba.allocator(),
+        bedlam.schema.manifest.manifest,
+        bedlam.schema.wire.Layout.wasm32,
+    ) catch return 1;
+
+    replica = step.Sim.init(fba.allocator(), 4096, step.component_ids) catch return 2;
+    // A fixed local id is fine: the CLIENT's id only has to be unique to this connection,
+    // and the server's id is the one that must be unguessable.
+    client_session = bedlam.net.session.Session.init(0x0C11E27, fp, .{});
+    net_out_len = @intCast(client_session.?.clientHello(&net_out, @splat(0)));
+    net_applied = 0;
+    net_frames = 0;
+    return 0;
+}
+
+/// Feed `len` bytes that JavaScript has written into `bedlamNetInBuf`.
+///
+/// Returns 0 on success. Anything queued for sending is left in `bedlamNetOut`.
+export fn bedlamNetFeed(len: u32) i32 {
+    var c = &(client_session orelse return 1);
+    net_out_len = 0;
+    const datagram = net_in[0..@min(len, net_in.len)];
+
+    if (!c.isEstablished()) {
+        const token = c.clientReceive(datagram) catch return 2;
+        if (token) |t| {
+            // Address validation: the server demanded a token, so say it back.
+            net_out_len = @intCast(c.clientHello(&net_out, t));
+        }
+        return 0;
+    }
+
+    const got = c.receive(datagram, &net_payload) catch return 3;
+    switch (got) {
+        .data => |payload| {
+            var r = bedlam.wire.bits.Reader.init(payload);
+            const decl = bedlam.schema.schema.components[0];
+            const Cols = step.Columns;
+            var ident: bedlam.wire.codec.Storage(decl) = std.mem.zeroes(bedlam.wire.codec.Storage(decl));
+            ident.rotation = .{ Fixed.ONE, Fixed.ZERO, Fixed.ZERO, Fixed.ZERO };
+
+            _ = bedlam.net.replicate.apply(
+                decl,
+                Cols,
+                &(replica orelse return 4),
+                &r,
+                ident,
+                std.mem.zeroes(Cols),
+            ) catch return 5;
+            net_applied += 1;
+
+            // The ack rides on the next packet out, so one is produced immediately. A
+            // client that only acks when it happens to send something leaves the server's
+            // baseline stalled and every delta full-sized.
+            net_out_len = @intCast(c.writePing(&net_out) catch 0);
+        },
+        .ping => net_out_len = @intCast(c.writePing(&net_out) catch 0),
+        .bye => {},
+        .discarded => {},
+    }
+    net_frames += 1;
+    return 0;
+}
+
+/// Replica entity positions, same layout as `bedlamPositions`.
+export fn bedlamNetPositions() u32 {
+    const r = &(replica orelse return 0);
+    var n: usize = 0;
+    var it = r.table.chunkIterator();
+    outer: while (it.next()) |c| {
+        for (c.liveEntities()) |e| {
+            if (n + 4 > position_buf.len) break :outer;
+            const p = r.table.get(e, "position").?;
+            position_buf[n + 0] = @truncate(p[0].raw);
+            position_buf[n + 1] = @truncate(p[0].raw >> 32);
+            position_buf[n + 2] = @truncate(p[1].raw);
+            position_buf[n + 3] = @truncate(p[1].raw >> 32);
+            n += 4;
+        }
+    }
+    return @intFromPtr(&position_buf);
+}
+
+export fn bedlamNetPositionWords() u32 {
+    const r = replica orelse return 0;
+    return @min(r.liveCount() * 4, position_buf.len);
+}
+
 // --- audio: the AudioWorklet side of M0 criterion 3 -------------------------
 //
 // The mixer is engine code (`src/audio/`), so the browser runs the SAME mixer as the

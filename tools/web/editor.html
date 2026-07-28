@@ -1,0 +1,153 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bedlam — collaborative session</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 0; background: #0b0d10; color: #c9d1d9; }
+  header { padding: .8rem 1rem; border-bottom: 1px solid #21262d; display: flex;
+           gap: 1.5rem; align-items: baseline; flex-wrap: wrap; }
+  h1 { font-size: .95rem; margin: 0; font-weight: 600; }
+  .k { color: #6e7681; }
+  .v { color: #7fd1ff; }
+  .bad { color: #ff7b72; }
+  .ok { color: #56d364; }
+  canvas { display: block; width: 100%; height: calc(100vh - 3.2rem); }
+</style>
+
+<header>
+  <h1>Bedlam</h1>
+  <span><span class="k">state</span> <span class="v" id="state">connecting</span></span>
+  <span><span class="k">entities</span> <span class="v" id="entities">0</span></span>
+  <span><span class="k">frames</span> <span class="v" id="frames">0</span></span>
+  <span><span class="k">schema</span> <span class="v" id="schema">…</span></span>
+</header>
+<canvas id="view"></canvas>
+
+<script type="module">
+// The browser is a replication client, and **the protocol is not implemented here.**
+//
+// `src/net/session.zig` and `src/net/replicate.zig` are compiled into the wasm module, so
+// this page performs the same handshake, the same ack accounting and the same delta
+// application as a native client. JavaScript owns exactly one thing: moving bytes over the
+// WebSocket. A JS reimplementation would be a second implementation of the one thing §7
+// says must not vary, and the first divergence would present as a desync nobody could
+// localise to a side.
+
+const el = (id) => document.getElementById(id);
+const ONE = 2 ** 24; // Q40.24
+
+const wasmBytes = await (await fetch('./bedlam_engine.wasm')).arrayBuffer();
+const { instance } = await WebAssembly.instantiate(wasmBytes, {});
+const w = instance.exports;
+
+const readStr = (ptr, len) =>
+  new TextDecoder().decode(new Uint8Array(w.memory.buffer, ptr, len));
+
+el('schema').textContent = readStr(w.bedlamFingerprint(), 64).slice(0, 16) + '…';
+
+const STATE = ['closed', 'handshaking', 'validating', 'established', 'ended'];
+
+if (w.bedlamNetConnect() !== 0) {
+  el('state').textContent = 'wasm init failed';
+  el('state').className = 'bad';
+  throw new Error('bedlamNetConnect failed');
+}
+
+const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+const sock = new WebSocket(url);
+sock.binaryType = 'arraybuffer';
+
+// Fresh views every time: wasm memory can be resized, and a cached view over a detached
+// buffer reads zeros silently rather than throwing — which would present as a server that
+// stopped sending.
+function drainOut() {
+  const len = w.bedlamNetOutLen();
+  if (len === 0) return;
+  const bytes = new Uint8Array(w.memory.buffer, w.bedlamNetOut(), len).slice();
+  if (sock.readyState === WebSocket.OPEN) sock.send(bytes);
+}
+
+sock.onopen = () => drainOut(); // the hello was produced by bedlamNetConnect
+
+sock.onmessage = (ev) => {
+  const src = new Uint8Array(ev.data);
+  if (src.length > 1200) return;
+  new Uint8Array(w.memory.buffer, w.bedlamNetInBuf(), src.length).set(src);
+  w.bedlamNetFeed(src.length);
+  drainOut();
+};
+
+sock.onclose = () => {
+  el('state').textContent = 'disconnected';
+  el('state').className = 'bad';
+};
+sock.onerror = () => {
+  el('state').textContent = 'connection failed';
+  el('state').className = 'bad';
+};
+
+const canvas = el('view');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  const r = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * r;
+  canvas.height = canvas.clientHeight * r;
+}
+addEventListener('resize', resize);
+resize();
+
+function frame() {
+  const s = w.bedlamNetState();
+  el('state').textContent = STATE[s] ?? s;
+  el('state').className = s === 3 ? 'ok' : (s === 4 ? 'bad' : '');
+  el('entities').textContent = w.bedlamNetEntities();
+  el('frames').textContent = w.bedlamNetFramesApplied();
+
+  // Mirrored into the title so a headless harness can read it from the DevTools target
+  // list without a DevTools protocol client. `--dump-dom` is not usable here: it needs
+  // --virtual-time-budget to be deterministic, and virtual time races ahead of real
+  // network I/O, so the page is captured before the socket has even connected.
+  document.title = `bedlam ${STATE[s] ?? s} e=${w.bedlamNetEntities()} f=${w.bedlamNetFramesApplied()}`;
+
+  const ptr = w.bedlamNetPositions();
+  const words = w.bedlamNetPositionWords();
+  const cw = canvas.width, ch = canvas.height;
+
+  ctx.fillStyle = '#0b0d10';
+  ctx.fillRect(0, 0, cw, ch);
+
+  if (ptr !== 0 && words > 0) {
+    const raw = new Int32Array(w.memory.buffer, ptr, words);
+    const scale = Math.min(cw, ch) / 24;
+    ctx.fillStyle = '#7fd1ff';
+    for (let i = 0; i < words; i += 4) {
+      // The i64 is reassembled and converted HERE, not in the engine. §7 keeps the
+      // runtime integer; the canvas is the only consumer that wants a float.
+      const x = (raw[i] >>> 0) / ONE + raw[i + 1] * (2 ** 32 / ONE);
+      const y = (raw[i + 2] >>> 0) / ONE + raw[i + 3] * (2 ** 32 / ONE);
+      const px = cw / 2 + x * scale;
+      const py = ch / 2 + y * scale;
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  // setTimeout, not requestAnimationFrame.
+  //
+  // rAF does not fire in a headless browser, so a harness sees the page's initial text
+  // forever and reports a client that never connected. The difference between "the page
+  // did not render" and "the session did not establish" is exactly what a harness exists
+  // to tell apart, and rAF makes them look identical.
+  setTimeout(frame, 16);
+}
+setTimeout(frame, 16);
+
+// Machine-readable, for the headless harness — same convention as the conformance probe.
+window.__bedlam_session = () => ({
+  state: w.bedlamNetState(),
+  entities: w.bedlamNetEntities(),
+  frames: w.bedlamNetFramesApplied(),
+});
+</script>

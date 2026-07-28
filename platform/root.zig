@@ -57,6 +57,15 @@ pub const audio_backend: ?type = switch (builtin.os.tag) {
 /// exist on `freestanding`, so this is not merely unimplemented on wasm32 — it is
 /// unbuildable, and the browser's transport is WebTransport rather than a socket anyway.
 /// `src/net/session.zig` is transport-agnostic precisely so that this can be null.
+/// The browser transport, or `null` where the target has no sockets.
+///
+/// Optional for the same reason `udp_backend` is: `std.http` and `std.Io.net` do not exist
+/// on freestanding, and a browser client obviously does not host one.
+pub const websocket_backend: ?type = switch (builtin.os.tag) {
+    .windows, .linux, .macos => if (builtin.abi == .android) null else @import("websocket.zig"),
+    else => null,
+};
+
 pub const udp_backend: ?type = switch (builtin.os.tag) {
     .windows, .linux, .macos, .ios => @import("udp.zig"),
     else => null,
@@ -78,4 +87,5 @@ test {
     _ = backend;
     if (audio_backend) |a| _ = a;
     if (udp_backend) |u| _ = u;
+    if (websocket_backend) |w| _ = w;
 }

@@ -111,6 +111,28 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
+        if (std.mem.startsWith(u8, arg, "--serve")) {
+            // The editor-over-a-link goal: one process serving the browser client and
+            // hosting the world it edits. See src/serve.zig.
+            //
+            // `--serve` runs until interrupted; `--serve=N` runs N ticks and reports, which
+            // is what the headless harness uses.
+            var ticks: u64 = 0;
+            if (std.mem.indexOfScalar(u8, arg, '=')) |eq| {
+                ticks = std.fmt.parseInt(u64, arg[eq + 1 ..], 10) catch 0;
+            }
+            // Port from a second argument rather than the environment: std 0.16 has no
+            // portable getenv, and an explicit flag is easier to put in a README anyway.
+            var port: u16 = 8080;
+            for (args[1..]) |a| {
+                if (std.mem.startsWith(u8, a, "--port=")) {
+                    port = std.fmt.parseInt(u16, a["--port=".len..], 10) catch 8080;
+                }
+            }
+            try @import("serve.zig").run(gpa, io, out, port, ticks);
+            continue;
+        }
+
         if (std.mem.eql(u8, arg, "--net-demo")) {
             // M0 criterion 4, demonstrated rather than asserted. §18.20: compiling is not
             // a working target. Two real sockets, two real receiver threads, a real

@@ -133,6 +133,16 @@ s390x and mips are big-endian; arm and mips are 32-bit; mips is both. That conve
 
 Adapted from [gkz](https://github.com/mattneel/gkz)'s `zig build cross`, which verifies the same property for the same reason.
 
+**Running it locally from Windows.** qemu-user is a Linux binary, so the gate does not run on a Windows host — but it runs in WSL2, which is where the same gate is exercised for fpz and gkz:
+
+```sh
+wsl -e bash -lc 'cd /mnt/c/src/bedlam-engine && zig build cross --cache-dir /tmp/bedlam-wsl-cache'
+```
+
+The separate `--cache-dir` matters: sharing `.zig-cache` between the Windows and WSL2 builds mixes two hosts' absolute paths and compiler binaries into one cache, and the resulting hits are not the ones you asked for. `scripts/cross.ps1` wraps this.
+
+This gate is therefore a **pre-commit** check, not a CI-only one. Treating it as unavailable locally is what lets a byte-order regression sit in the tree until a runner finds it — and s390x is the only place several of these invariants are checked at all.
+
 ### Cross-ISA determinism of the simulation — live
 
 `zig build verify-determinism` runs on all four native hosts in the `test` job, and the harness plus the canonical world hash are also compiled and run on aarch64, s390x, arm and mips by the cross gate. §7's claim that the simulation steps identically is therefore checked on two ISAs natively and four under emulation, including a big-endian 32-bit one.

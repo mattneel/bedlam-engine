@@ -40,6 +40,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Cross-compiling to a Darwin target needs the SDK's search paths wired
+    // explicitly. Zig bundles libSystem stubs for macOS — which is why
+    // aarch64-macos cross-compiles from any host with no Apple tooling — but has
+    // none for iOS, and it only auto-detects an SDK when the target OS is the
+    // native one. aarch64-ios from a macOS host is not native, so --sysroot is
+    // accepted and then resolves nothing on its own.
+    if (t.os.tag.isDarwin()) {
+        if (b.sysroot) |sysroot| {
+            exe.root_module.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "usr", "lib" }) });
+            exe.root_module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System", "Library", "Frameworks" }) });
+            exe.root_module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "usr", "include" }) });
+        }
+    }
+
     b.installArtifact(exe);
 
     // `zig build run` is meaningless for a module with no entry point.

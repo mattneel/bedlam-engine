@@ -24,6 +24,17 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("schema/registry.txt"),
     });
 
+    // Deterministic fixed point. ARCHITECTURE.md §7 requires, inside the rollback
+    // boundary: fixed point, no FMA contraction, no fast-math, and "own polynomial
+    // transcendentals, never platform libm". fpz is exactly that contract — Q40.24 over
+    // an i64, integer-only at runtime, float permitted only at comptime, and every
+    // operation total (a defined result for all inputs, including overflow).
+    //
+    // Pinned by commit rather than branch: §14.2 requires reproducible builds, and a
+    // moving dependency under a determinism claim is a determinism hazard.
+    const fpz = b.dependency("fpz", .{ .target = target, .optimize = optimize });
+    const fpz_mod = fpz.module("fpz");
+
     // Wire format: bit packing, quantization, generated codecs.
     //
     // AGENTS.md §3 puts packet parse in ReleaseSafe regardless of the surrounding build
@@ -36,9 +47,11 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSafe,
     });
     wire_mod.addImport("bedlam_schema", schema_mod);
+    wire_mod.addImport("fpz", fpz_mod);
 
     mod.addImport("bedlam_schema", schema_mod);
     mod.addImport("bedlam_wire", wire_mod);
+    mod.addImport("fpz", fpz_mod);
 
     const t = target.result;
     const is_wasm_freestanding = t.cpu.arch.isWasm() and t.os.tag == .freestanding;

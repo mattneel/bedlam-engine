@@ -12,65 +12,52 @@
 //! should be loud.
 
 const std = @import("std");
+const fpz = @import("fpz");
 const bits = @import("bits.zig");
 const quant = @import("quant.zig");
 const schema_mod = @import("bedlam_schema");
 const d = schema_mod.declare;
 const w = schema_mod.wire;
 
-/// 16.16 fixed point. `ARCHITECTURE.md` §7 requires fixed point inside the rollback
-/// boundary — floats are not bit-exact across x86, ARM, and wasm32, and pretending
-/// otherwise is the folklore §7 names.
-pub const Q16_16 = struct {
-    raw: i32,
+/// The simulation's fixed-point type: `fpz.Fixed`, Q40.24 over an i64.
+///
+/// `ARCHITECTURE.md` §7 requires fixed point inside the rollback boundary, no FMA
+/// contraction, no fast-math, and "own polynomial transcendentals, never platform libm".
+/// fpz is that contract as a library — integer-only at runtime, float only at comptime,
+/// and every operation total.
+///
+/// This replaced a hand-rolled Q16.16. That type was a demonstration of why §7 exists:
+/// its `fromFloat` used an unguarded `@intFromFloat`, which is illegal behaviour out of
+/// range, and the targets disagree about what illegal means — x86_64 yields INT_MIN
+/// where aarch64 and wasm32 saturate to INT_MAX. A fixed-point type that inherits float
+/// divergence defeats the only reason to have one.
+pub const Fixed = fpz.Fixed;
 
-    pub const one: Q16_16 = .{ .raw = 1 << 16 };
-    /// Representable range: [-32768, +32768).
-    pub const min_value: f32 = -32768.0;
-    pub const max_value: f32 = 32767.99998474121;
+/// Wire representation of a fixed-point scalar: Q16.16 in 32 bits.
+///
+/// The simulation type is 64-bit and the wire cannot afford that —
+/// `BENCHMARK_CONTRACT.md` §4.1 gives the whole snapshot ~1,500 bytes for ~180 entity
+/// updates. `ARCHITECTURE.md` §5.1 is explicit that the four projections are *not the
+/// same bytes*, so narrowing here is the design rather than a compromise: simulation
+/// keeps Q40.24, replication sends Q16.16, and reconciliation covers the difference.
+///
+/// Both directions are total. Narrowing saturates rather than wrapping, because a
+/// wrapped health value flips sign and a saturated one is merely clamped.
+pub const WireFixed = struct {
+    /// Frac bits dropped when narrowing Q40.24 to Q16.16.
+    const shift: u5 = fpz.Fixed.frac_bits - 16;
 
-    /// **The conversion is clamped explicitly, and that is not defensive style — it is
-    /// the difference between this type working and this type desyncing the session.**
-    ///
-    /// `@intFromFloat` is illegal behaviour when the value does not fit the destination,
-    /// and the three architectures disagree about what illegal means:
-    ///
-    ///   x86_64  `cvttss2si` returns the "integer indefinite" 0x80000000 for both
-    ///           out-of-range and NaN — so 32768.0 becomes -32768.0.
-    ///   aarch64 `fcvtas` saturates to INT_MAX / INT_MIN and returns 0 for NaN.
-    ///   wasm32  `i32.trunc_sat_f32_s` saturates, and returns 0 for NaN.
-    ///
-    /// So an unguarded `fromFloat(32768.0)` yields -32768.0 on a desktop host and
-    /// +32767.99998 on a phone or a browser. `ARCHITECTURE.md` §7 designates fixed point
-    /// as the type that survives inside the rollback boundary *precisely because* floats
-    /// do not agree across x86, ARM, and wasm32 — a fixed-point constructor that inherits
-    /// float divergence defeats the only reason the type exists.
-    ///
-    /// NaN asserts rather than clamping: this is the encode side, operating on our own
-    /// simulation state, where a NaN is a physics blow-up upstream and silence is the
-    /// worst possible response. Out-of-range clamps, because saturating a health value is
-    /// recoverable and a cross-architecture disagreement is not.
-    pub fn fromFloat(v: f32) Q16_16 {
-        std.debug.assert(!std.math.isNan(v));
-        // f64 throughout: f32 cannot represent every i32, so rounding at the boundary in
-        // f32 would reintroduce the same class of edge case this guard exists to remove.
-        const scaled = @round(@as(f64, v) * 65536.0);
-        const clamped = std.math.clamp(
-            scaled,
-            @as(f64, std.math.minInt(i32)),
-            @as(f64, std.math.maxInt(i32)),
-        );
-        return .{ .raw = @intFromFloat(clamped) };
+    pub fn narrow(v: Fixed) i32 {
+        const shifted = v.raw >> shift;
+        return @intCast(std.math.clamp(
+            shifted,
+            @as(i64, std.math.minInt(i32)),
+            @as(i64, std.math.maxInt(i32)),
+        ));
     }
 
-    pub fn toFloat(self: Q16_16) f32 {
-        return @as(f32, @floatFromInt(self.raw)) / 65536.0;
-    }
-
-    /// Wrapping, and deliberately so: two's complement wraparound is identical on every
-    /// target, whereas a trap would be a divergence between safety and release builds.
-    pub fn add(a: Q16_16, b: Q16_16) Q16_16 {
-        return .{ .raw = a.raw +% b.raw };
+    pub fn widen(raw32: i32) Fixed {
+        return fpz.Fixed.fromRaw(@as(i64, raw32) << shift);
     }
 };
 
@@ -96,7 +83,7 @@ pub fn StorageType(comptime wt: w.WireType) type {
         .i64 => i64,
         .f32 => f32,
         .f64 => f64,
-        .q16_16 => Q16_16,
+        .q16_16 => Fixed,
         .vec3_quantized => [3]f32,
         .quat_smallest_three => [4]f32,
         .entity_handle => EntityHandle,
@@ -224,7 +211,7 @@ fn encodeField(comptime f: d.Field, value: anytype, writer: *bits.Writer) bits.W
         },
         .f32 => try writer.writeBits(@as(u32, @bitCast(value)), 32),
         .f64 => try writer.writeBits(@as(u64, @bitCast(value)), 64),
-        .q16_16 => try writer.writeBits(@as(u32, @bitCast(value.raw)), 32),
+        .q16_16 => try writer.writeBits(@as(u32, @bitCast(WireFixed.narrow(value))), 32),
         .entity_handle => try writer.writeBits(@as(u32, @bitCast(value)), 32),
         .string_id => try writer.writeBits(value, 32),
         .vec3_quantized => {
@@ -257,7 +244,7 @@ fn decodeField(comptime f: d.Field, reader: *bits.Reader) bits.Reader.Error!Stor
         },
         .f32 => @bitCast(@as(u32, @intCast(try reader.readBits(32)))),
         .f64 => @bitCast(try reader.readBits(64)),
-        .q16_16 => .{ .raw = @bitCast(@as(u32, @intCast(try reader.readBits(32)))) },
+        .q16_16 => WireFixed.widen(@bitCast(@as(u32, @intCast(try reader.readBits(32))))),
         .entity_handle => @bitCast(@as(u32, @intCast(try reader.readBits(32)))),
         .string_id => @intCast(try reader.readBits(32)),
         .vec3_quantized => blk: {

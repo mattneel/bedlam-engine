@@ -109,6 +109,7 @@ The floor admits no *platform* exceptions. It admits *environment* classes, and 
 | Gameplay / mods / editor tooling | **QuickJS-NG** via `zig-quickjs-ng` |
 | Shaders | **Slang** |
 | Control plane | **Elixir / OTP / Phoenix** |
+| Deterministic fixed point | **`fpz`** — Q40.24, integer-only runtime (§7) |
 | Build | `zig build` meta-build; `zig cc` for all vendored C/C++ |
 
 **Why Zig:** cross-compilation as a solved problem across six targets and every vendored C/C++ dependency from one CI host — a cost that otherwise recurs on every dependency forever. `comptime` deletes the code-generator tier P2 demands. Allocator-as-parameter is the engine allocator model by default. `@cImport` with no bindgen.
@@ -243,6 +244,12 @@ Design brief and open research questions: `SCOPED_ROLLBACK.md`.
 The reference workload runs **profile 2 with profile-3-grade scoped rollback on the local causal island**. Full profile 3 at 64 with destruction is unfit, not merely hard — every client would deterministically simulate every fragment.
 
 **Profile 3 requirements:** fixed-point inside the rollback boundary · no FMA contraction, no fast-math · own polynomial transcendentals, never platform libm · fixed-tree parallel reductions · `--verify-determinism` running the sim twice at different thread counts and hashing every tick, failing CI on divergence, from day one.
+
+**The numeric substrate is [`fpz`](https://github.com/mattneel/fpz)**, pinned by commit. Q40.24 over an `i64`, integer-only at runtime, float permitted only at `comptime`, every operation total — a defined result for all inputs including overflow — and native integer transcendentals rather than libm. That is this list as a library rather than as a convention, which matters because a convention is something a later commit can violate without noticing.
+
+Hand-rolling this was tried and is instructive about why not to. The first attempt built a Q16.16 whose `fromFloat` used an unguarded `@intFromFloat`; that is illegal behaviour out of range, and the targets disagree about what illegal means — x86_64 returns `INT_MIN` where aarch64 and wasm32 saturate to `INT_MAX`. So the same input produced values of *opposite sign* on a desktop host and on a phone, in the one type this section designates for the rollback boundary. A fixed-point type that inherits float divergence defeats the only reason to have one.
+
+**The wire is not the simulation type.** §5.1's projections are not the same bytes: simulation state is Q40.24, and the replication projection narrows to Q16.16 in 32 bits, because `BENCHMARK_CONTRACT.md` §4.1 gives the whole snapshot ~1,500 bytes. Narrowing saturates rather than wraps.
 
 Bit-exact cross-architecture float determinism across x86 / ARM / wasm32 is folklore. Don't design around it.
 

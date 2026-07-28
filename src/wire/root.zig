@@ -6,6 +6,7 @@
 //! updates, so roughly 8 bytes each.
 
 const std = @import("std");
+const fpz = @import("fpz");
 const schema_mod = @import("bedlam_schema");
 
 pub const bits = @import("bits.zig");
@@ -109,33 +110,36 @@ test "Transform fits the per-entity budget from BENCHMARK_CONTRACT §4.1" {
     try std.testing.expectEqual(@as(usize, 113), comptime codec.componentBits(Transform));
 }
 
-test "Q16_16 conversion is identical on every architecture" {
-    // The critical one. Unguarded, `@intFromFloat` out of range is illegal behaviour and
-    // the targets disagree: x86_64's cvttss2si yields INT_MIN for overflow AND NaN,
-    // while aarch64's fcvtas and wasm32's trunc_sat both saturate to INT_MAX. So
-    // fromFloat(32768.0) was -32768.0 on a desktop host and +32767.99998 on a phone or a
-    // browser — a guaranteed desync in the ONE type ARCHITECTURE.md §7 designates for
-    // the rollback boundary, whose entire purpose is that floats do not agree.
-    //
-    // These expectations are architecture-independent by construction: every input is
-    // clamped in the float domain before conversion, so there is no illegal case left.
-    const Q = codec.Q16_16;
+test "narrowing to the wire is total and saturating" {
+    // The hand-rolled Q16.16 this replaced had an unguarded @intFromFloat, which is
+    // illegal behaviour out of range and made x86_64 disagree with aarch64 and wasm32 in
+    // SIGN. fpz removes that class entirely — it is integer-only at runtime — but the
+    // narrowing from Q40.24 to the 32-bit wire form is ours, so it is tested here.
+    const F = codec.Fixed;
+    const W = codec.WireFixed;
 
-    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), Q.fromFloat(32768.0).raw);
-    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), Q.fromFloat(1e30).raw);
-    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), Q.fromFloat(-40000.0).raw);
-    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), Q.fromFloat(-1e30).raw);
-    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), Q.fromFloat(std.math.inf(f32)).raw);
-    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), Q.fromFloat(-std.math.inf(f32)).raw);
+    // In range: exact through narrow/widen, since only the low 8 frac bits are dropped.
+    for ([_]i64{ 0, 1 << 24, -(1 << 24), 87 << 24, -1234 << 24 }) |raw| {
+        const v = F.fromRaw(raw);
+        try std.testing.expectEqual(raw, W.widen(W.narrow(v)).raw);
+    }
 
-    // In range, the value is exact.
-    try std.testing.expectEqual(@as(i32, 87 * 65536 + 16384), Q.fromFloat(87.25).raw);
-    try std.testing.expectApproxEqAbs(@as(f32, -1234.5), Q.fromFloat(-1234.5).toFloat(), 0.0001);
+    // Beyond Q16.16's range, narrowing saturates rather than wrapping — a wrapped health
+    // value flips sign, a saturated one is merely clamped.
+    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), W.narrow(F.MAX));
+    try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), W.narrow(F.MIN));
+    try std.testing.expect(W.narrow(F.fromInt(1_000_000)) > 0);
+    try std.testing.expect(W.narrow(F.fromInt(-1_000_000)) < 0);
+}
 
-    // And saturation is monotone rather than wrapping, so a clamped value stays on the
-    // side it came from — the failure that made x86_64 and aarch64 disagree in sign.
-    try std.testing.expect(Q.fromFloat(1e30).toFloat() > 0);
-    try std.testing.expect(Q.fromFloat(-1e30).toFloat() < 0);
+test "fpz is integer-only, so there is no float conversion to diverge on" {
+    // ARCHITECTURE.md §7's actual requirement. Constants are folded at comptime; the
+    // runtime path never touches a float, which is why this type can cross the rollback
+    // boundary at all.
+    const F = codec.Fixed;
+    try std.testing.expectEqual(@as(i64, 1 << 24), F.ONE.raw);
+    try std.testing.expectEqual(F.fromInt(3).raw, F.add(F.ONE, F.fromInt(2)).raw);
+    try std.testing.expectEqual(F.fromInt(6).raw, F.mul(F.fromInt(2), F.fromInt(3)).raw);
 }
 
 test "fixed-point survives the wire exactly" {
@@ -143,7 +147,7 @@ test "fixed-point survives the wire exactly" {
     // exact — a lossy round trip there is a desync, not a visual artifact.
     var buf: [16]u8 = undefined;
     const original: codec.Storage(Health) = .{
-        .current = codec.Q16_16.fromFloat(87.25),
+        .current = fpz.Fixed.rconst(87.25),
         .maximum = 100,
     };
 
@@ -319,7 +323,7 @@ fn initToZero(comptime c: @TypeOf(schema.components[0]), value: *codec.Storage(c
             .bool => false,
             .u8, .u16, .u32, .u64, .i8, .i16, .i32, .i64, .string_id => 0,
             .f32, .f64 => 0.0,
-            .q16_16 => codec.Q16_16{ .raw = 0 },
+            .q16_16 => codec.Fixed.ZERO,
             .vec3_quantized => [3]f32{ 0, 0, 0 },
             // Must be a unit quaternion: encode asserts it.
             .quat_smallest_three => [4]f32{ 1, 0, 0, 0 },

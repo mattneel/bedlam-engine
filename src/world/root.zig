@@ -1,0 +1,14 @@
+//! The world database. `ARCHITECTURE.md` §5.
+//!
+//! Components live in archetype chunks, SoA per family, with layout permitted to differ
+//! per target (§0 P1) and semantic schema that may not. Chunks carry no per-field
+//! metadata from any subsystem, ever (§18.5) — enforced by `schema.storable`, not by
+//! convention.
+
+pub const entity = @import("entity.zig");
+pub const chunk = @import("chunk.zig");
+
+test {
+    _ = entity;
+    _ = chunk;
+}

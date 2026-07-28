@@ -10,6 +10,8 @@ const std = @import("std");
 
 pub const schema = @import("bedlam_schema");
 pub const wire = @import("bedlam_wire");
+pub const sim = @import("bedlam_sim");
+pub const world = @import("bedlam_world");
 
 /// Pre-1.0. `ARCHITECTURE.md` §19 states exit criteria rather than versions, so this
 /// tracks milestones and not semver promises.
@@ -18,4 +20,6 @@ pub const version = "0.0.0-M0";
 test {
     _ = schema;
     _ = wire;
+    _ = sim;
+    _ = world;
 }

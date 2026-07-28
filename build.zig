@@ -58,6 +58,16 @@ pub fn build(b: *std.Build) void {
     });
     sim_mod.addImport("fpz", fpz_mod);
 
+    // World database. ARCHITECTURE.md §5.
+    const world_mod = b.addModule("bedlam_world", .{
+        .root_source_file = b.path("src/world/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    world_mod.addImport("bedlam_schema", schema_mod);
+    world_mod.addImport("fpz", fpz_mod);
+
+    mod.addImport("bedlam_world", world_mod);
     mod.addImport("bedlam_schema", schema_mod);
     mod.addImport("bedlam_wire", wire_mod);
     mod.addImport("bedlam_sim", sim_mod);
@@ -166,6 +176,9 @@ pub fn build(b: *std.Build) void {
     const sim_tests = b.addTest(.{ .root_module = sim_mod });
     test_step.dependOn(&b.addRunArtifact(sim_tests).step);
 
+    const world_tests = b.addTest(.{ .root_module = world_mod });
+    test_step.dependOn(&b.addRunArtifact(world_tests).step);
+
     addCrossStep(b);
 }
 
@@ -249,7 +262,15 @@ fn addCrossStep(b: *std.Build) void {
             });
             sim.addImport("fpz", fpz_dep.module("fpz"));
 
-            for ([_]*std.Build.Module{ schema, wire, sim }) |m| {
+            const world = b.createModule(.{
+                .root_source_file = b.path("src/world/root.zig"),
+                .target = rt,
+                .optimize = mode,
+            });
+            world.addImport("bedlam_schema", schema);
+            world.addImport("fpz", fpz_dep.module("fpz"));
+
+            for ([_]*std.Build.Module{ schema, wire, sim, world }) |m| {
                 const t = b.addTest(.{ .root_module = m });
                 const run = b.addRunArtifact(t);
                 // Foreign binaries are cached aggressively; without this a green run can

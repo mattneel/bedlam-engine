@@ -569,16 +569,29 @@ test "a family mismatch is refused here, not by the OS" {
     try testing.expectEqual(@as(u64, 0), s.sent);
 }
 
-/// Spin the frame loop's actual read path until something shows up.
+/// Wait on the frame loop's actual read path until something shows up.
 ///
-/// Note what this does NOT do: touch a socket. That is the whole point of the receiver
-/// thread — `poll` is a ring pop, so a test that spins here is spinning on exactly what the
-/// game will spin on.
-fn awaitPoll(r: anytype) !Datagram {
-    var tries: u32 = 0;
-    while (tries < 200_000) : (tries += 1) {
+/// Note what this does NOT do: touch a socket. That is the point of the receiver thread —
+/// `poll` is a ring pop, so a test waiting here waits on exactly what the game waits on.
+///
+/// **It yields to the OS rather than spinning.** The first version was a `spinLoopHint`
+/// busy-loop bounded by an iteration count, which passes on a machine with cores to spare
+/// and fails on one without: the spinning test thread starves the very receiver thread it
+/// is waiting for, 200,000 iterations elapse in microseconds, and the test reports
+/// `NothingArrived` for a datagram that was delivered a moment later. It failed on hosted
+/// runners and never locally, which is exactly the shape that costs days.
+///
+/// Bounded in WALL CLOCK, not iterations, for the same reason — an iteration budget means
+/// something different on every machine.
+fn awaitPoll(r: anytype, io: Io) !Datagram {
+    const nap: Io.Timeout = .{ .duration = .{
+        .raw = .{ .nanoseconds = std.time.ns_per_ms },
+        .clock = .awake,
+    } };
+    var waited: u32 = 0;
+    while (waited < 5_000) : (waited += 1) {
         if (r.poll()) |d| return d;
-        std.atomic.spinLoopHint();
+        nap.sleep(io) catch {};
     }
     return error.NothingArrived;
 }
@@ -600,12 +613,12 @@ test "a datagram crosses loopback and arrives through the ring" {
     var exchanged: u32 = 0;
     if (server.pair.ip4) |s| {
         try testing.expect(client_pair.send(io, .{ .ip4 = .loopback(s.port()) }, "v4"));
-        try testing.expectEqualStrings("v4", (try awaitPoll(&server)).bytes);
+        try testing.expectEqualStrings("v4", (try awaitPoll(&server, io)).bytes);
         exchanged += 1;
     }
     if (server.pair.ip6) |s| {
         try testing.expect(client_pair.send(io, .{ .ip6 = .loopback(s.port()) }, "v6"));
-        try testing.expectEqualStrings("v6", (try awaitPoll(&server)).bytes);
+        try testing.expectEqualStrings("v6", (try awaitPoll(&server, io)).bytes);
         exchanged += 1;
     }
 
@@ -662,8 +675,14 @@ test "many datagrams arrive without loss or duplication" {
         _ = client_pair.send(io, dst, &payload);
     }
 
+    // Yields rather than spins, for the reason in `awaitPoll`: a busy-wait here starves
+    // the receiver thread on any machine that does not have a spare core for it.
+    const nap: Io.Timeout = .{ .duration = .{
+        .raw = .{ .nanoseconds = std.time.ns_per_ms },
+        .clock = .awake,
+    } };
     var spins: u32 = 0;
-    while (got < count and spins < 500_000) : (spins += 1) {
+    while (got < count and spins < 5_000) : (spins += 1) {
         if (server.poll()) |d| {
             // Anything not our shape is skipped rather than asserted on. A datagram this
             // test did not send is not this test's business, and turning it into a hard
@@ -676,7 +695,7 @@ test "many datagrams arrive without loss or duplication" {
             // The rest of the payload is the index as a byte: a torn slot shows up here.
             for (d.bytes[4..]) |b| try testing.expectEqual(@as(u8, @intCast(i)), b);
             got += 1;
-        }
+        } else nap.sleep(io) catch {};
     }
 
     // **"Most arrived" is not a property UDP has.** An earlier version required half the
@@ -716,9 +735,13 @@ test "ring overrun is counted rather than silently dropping newer state" {
     // Send far more than the ring holds without draining.
     for (0..64) |_| _ = client_pair.send(io, dst, "x");
 
+    const nap: Io.Timeout = .{ .duration = .{
+        .raw = .{ .nanoseconds = std.time.ns_per_ms },
+        .clock = .awake,
+    } };
     var spins: u32 = 0;
-    while (server.overruns.load(.monotonic) == 0 and spins < 500_000) : (spins += 1) {
-        std.atomic.spinLoopHint();
+    while (server.overruns.load(.monotonic) == 0 and spins < 5_000) : (spins += 1) {
+        nap.sleep(io) catch {};
     }
     try testing.expect(server.overruns.load(.monotonic) > 0);
 

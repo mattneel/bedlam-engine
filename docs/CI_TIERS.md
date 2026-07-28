@@ -133,7 +133,14 @@ s390x and mips are big-endian; arm and mips are 32-bit; mips is both. That conve
 
 Adapted from [gkz](https://github.com/mattneel/gkz)'s `zig build cross`, which verifies the same property for the same reason.
 
-**Running it locally from Windows.** qemu-user is a Linux binary, so the gate does not run on a Windows host — but it runs in WSL2, which is where the same gate is exercised for fpz and gkz:
+**Running everything locally: `scripts/check.ps1`.** Windows and Linux native (Debug and
+ReleaseSafe), wasm32 parity, determinism, and the qemu cross gate — every check this machine
+can perform. It exists because of a specific repeated failure: a change passed
+`zig build test` on Windows and aborted on every Linux and macOS CI row, twice, both times
+on POSIX behaviour Windows tolerates. Using a ten-minute CI loop to find that is using the
+wrong instrument.
+
+**Running the cross gate alone from Windows.** qemu-user is a Linux binary, so the gate does not run on a Windows host — but it runs in WSL2, which is where the same gate is exercised for fpz and gkz:
 
 ```sh
 wsl -e bash -lc 'cd /mnt/c/src/bedlam-engine && zig build cross --cache-dir /tmp/bedlam-wsl-cache'

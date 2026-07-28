@@ -151,6 +151,11 @@ The last one matters most. `SCOPED_ROLLBACK.md` is a research brief, not a spec.
 | What is known to be wrong with the spec | `docs/SPEC_DEFECTS.md` — **read before trusting a number** |
 | Why the platform code works around the toolchain | `docs/UPSTREAM_FINDINGS.md` — **read before "simplifying" `platform/udp.zig`** |
 
+**Run `scripts/check.ps1` before pushing.** Windows and Linux native in both optimize modes,
+wasm32 parity, determinism, and the qemu cross gate. Windows alone is not enough and has
+twice not been: POSIX rejects things Windows tolerates, and CI is the wrong place to find
+that out.
+
 `ARCHITECTURE.md` §21 lists open questions at the architecture level. If a task touches one, say so in the PR rather than resolving it silently.
 
 ---

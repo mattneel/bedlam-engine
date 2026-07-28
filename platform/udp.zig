@@ -353,11 +353,19 @@ pub fn Receiver(comptime slots: usize) type {
             if (!self.running.load(.acquire)) return;
             self.running.store(false, .release);
 
+            // One byte, not zero. An empty slice's pointer is a dangling sentinel, and
+            // Linux's sendto rejects it with EFAULT — which `std.Io.Threaded` treats as a
+            // programmer bug and panics on in Debug. Windows accepts it, so this passed
+            // locally and aborted on every Linux and macOS CI row.
+            //
+            // The payload is never seen: the thread re-checks `running` after the receive
+            // and returns without publishing.
+            const wake = [_]u8{0};
             if (self.pair.ip4) |*s| {
-                _ = s.send(self.io, .{ .ip4 = .loopback(s.port()) }, &.{});
+                _ = s.send(self.io, .{ .ip4 = .loopback(s.port()) }, &wake);
             }
             if (self.pair.ip6) |*s| {
-                _ = s.send(self.io, .{ .ip6 = .loopback(s.port()) }, &.{});
+                _ = s.send(self.io, .{ .ip6 = .loopback(s.port()) }, &wake);
             }
 
             for (&self.threads) |*t| {

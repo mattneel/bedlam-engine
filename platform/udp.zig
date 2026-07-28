@@ -298,6 +298,10 @@ pub fn Receiver(comptime slots: usize) type {
 
         threads: [2]?std.Thread = .{ null, null },
         running: std.atomic.Value(bool) = .init(false),
+        /// How many receiver threads have not yet returned. `stop` watches this rather
+        /// than going straight to `join`, because the only way to wake a blocked receive
+        /// is a datagram and a datagram can be lost.
+        live_threads: std.atomic.Value(u32) = .init(0),
 
         /// Datagrams the ring had no room for. Nonzero means the frame loop is not draining
         /// fast enough, which is a scheduling problem rather than a network one — and the
@@ -329,11 +333,19 @@ pub fn Receiver(comptime slots: usize) type {
             // reproduces once a month on one player's machine.
             var n: usize = 0;
             if (self.pair.ip4 != null) {
-                self.threads[n] = try std.Thread.spawn(.{}, loop, .{ self, Family.ip4 });
+                _ = self.live_threads.fetchAdd(1, .monotonic);
+                self.threads[n] = std.Thread.spawn(.{}, loop, .{ self, Family.ip4 }) catch |e| {
+                    _ = self.live_threads.fetchSub(1, .monotonic);
+                    return e;
+                };
                 n += 1;
             }
             if (self.pair.ip6 != null) {
-                self.threads[n] = try std.Thread.spawn(.{}, loop, .{ self, Family.ip6 });
+                _ = self.live_threads.fetchAdd(1, .monotonic);
+                self.threads[n] = std.Thread.spawn(.{}, loop, .{ self, Family.ip6 }) catch |e| {
+                    _ = self.live_threads.fetchSub(1, .monotonic);
+                    return e;
+                };
                 n += 1;
             }
         }
@@ -353,19 +365,33 @@ pub fn Receiver(comptime slots: usize) type {
             if (!self.running.load(.acquire)) return;
             self.running.store(false, .release);
 
-            // One byte, not zero. An empty slice's pointer is a dangling sentinel, and
-            // Linux's sendto rejects it with EFAULT — which `std.Io.Threaded` treats as a
-            // programmer bug and panics on in Debug. Windows accepts it, so this passed
-            // locally and aborted on every Linux and macOS CI row.
+            // **Woken repeatedly, not once.**
             //
-            // The payload is never seen: the thread re-checks `running` after the receive
-            // and returns without publishing.
+            // The wakeup is a datagram, and a datagram can be dropped — by a full receive
+            // buffer, which is exactly the state a burst leaves the socket in. One send
+            // and a straight `join` means a lost wakeup blocks shutdown FOREVER: the
+            // thread sits in `receiveBlocking`, `join` never returns, and a test harness
+            // reports a process it had to kill with no output at all. That is what a
+            // hosted Linux runner did while thirty consecutive local runs passed.
+            //
+            // So: resend until every thread has actually left the loop, then join. Joining
+            // is still the thing that makes shutdown correct; this only guarantees it can
+            // complete.
             const wake = [_]u8{0};
-            if (self.pair.ip4) |*s| {
-                _ = s.send(self.io, .{ .ip4 = .loopback(s.port()) }, &wake);
-            }
-            if (self.pair.ip6) |*s| {
-                _ = s.send(self.io, .{ .ip6 = .loopback(s.port()) }, &wake);
+            var attempt: u32 = 0;
+            while (self.live_threads.load(.acquire) > 0 and attempt < 200) : (attempt += 1) {
+                if (self.pair.ip4) |*s| {
+                    _ = s.send(self.io, .{ .ip4 = .loopback(s.port()) }, &wake);
+                }
+                if (self.pair.ip6) |*s| {
+                    _ = s.send(self.io, .{ .ip6 = .loopback(s.port()) }, &wake);
+                }
+                if (self.live_threads.load(.acquire) == 0) break;
+                const nap: Io.Timeout = .{ .duration = .{
+                    .raw = .{ .nanoseconds = 2 * std.time.ns_per_ms },
+                    .clock = .awake,
+                } };
+                nap.sleep(self.io) catch {};
             }
 
             for (&self.threads) |*t| {
@@ -382,6 +408,7 @@ pub fn Receiver(comptime slots: usize) type {
         }
 
         fn loop(self: *Self, family: Family) void {
+            defer _ = self.live_threads.fetchSub(1, .release);
             const sock: *Socket = switch (family) {
                 .ip4 => &self.pair.ip4.?,
                 .ip6 => &self.pair.ip6.?,

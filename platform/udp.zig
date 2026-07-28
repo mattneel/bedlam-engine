@@ -88,6 +88,22 @@ pub const Socket = struct {
         self.inner.close(io);
     }
 
+    /// Unblock a thread parked in `receiveBlocking`.
+    ///
+    /// This is the mechanism designed for the job, and it is deterministic in a way the
+    /// self-addressed wakeup datagram is not: a datagram has to *route*. A socket bound to
+    /// `::` binds successfully on hosts where v6 loopback traffic does not flow, so the
+    /// wakeup is silently dropped and the thread blocks forever — which is a hang on
+    /// exactly the restricted hosts a CI runner tends to be, and never on a developer
+    /// machine with a full stack.
+    ///
+    /// `std.Io.net` puts `shutdown` on `Stream` rather than `Socket`, but a `Stream` is a
+    /// `Socket` with a different name on it, and the operation is on the handle.
+    pub fn unblock(self: *Socket, io: Io) void {
+        const stream: net.Stream = .{ .socket = self.inner };
+        stream.shutdown(io, .recv) catch {};
+    }
+
     /// The address the socket actually bound, including the port the OS chose.
     pub fn bound(self: Socket) Address {
         return self.inner.address;
@@ -364,6 +380,14 @@ pub fn Receiver(comptime slots: usize) type {
         pub fn stop(self: *Self) void {
             if (!self.running.load(.acquire)) return;
             self.running.store(false, .release);
+
+            // Shut the receive side down first, then fall back to waking with a datagram.
+            //
+            // `shutdown` is deterministic; the datagram is not, because it has to route.
+            // Keeping both is deliberate: `shutdown` on a UDP socket is not specified to
+            // unblock a pending receive on every platform, and the wakeup covers that.
+            if (self.pair.ip4) |*s| s.unblock(self.io);
+            if (self.pair.ip6) |*s| s.unblock(self.io);
 
             // **Woken repeatedly, not once.**
             //

@@ -100,10 +100,23 @@ So it is not an error — it is a panic, in release builds a crash, on the shutd
 **Observed:** `reached unreachable code` at `Threaded.zig:13013` on every `Receiver.stop`
 with a thread parked in `receive`.
 
-**What Bedlam does instead:** `stop` clears `running` and sends the socket a zero-length
-datagram addressed to itself. The receive returns normally, the thread re-checks `running`
-and exits, and only then is the socket closed. The thread also re-checks `running` *after*
-the receive so the wakeup packet is never published to the frame loop.
+**What Bedlam does instead:** `stop` clears `running`, calls `shutdown(recv)` on each
+socket, and *also* sends a one-byte datagram addressed to itself. The thread's receive
+returns, it re-checks `running`, and exits; only then is the socket closed. The thread
+re-checks `running` **after** the receive too, so a wakeup packet is never published to the
+frame loop.
+
+**Why both mechanisms.** The datagram alone is not sound: a datagram has to *route*. A
+socket bound to `::` binds successfully on hosts where v6 loopback traffic does not flow, so
+the wakeup is silently dropped and the thread blocks forever — a hang on exactly the
+restricted hosts a CI runner tends to be, and never on a developer machine with a full
+stack. That reproduced as intermittent "failed without output" on hosted Windows and
+aarch64 runners across several commits while thirty consecutive local runs passed.
+`shutdown` is deterministic and does not route; the datagram remains because `shutdown` on a
+*datagram* socket is not specified to unblock a pending receive on every platform.
+
+`std.Io.net` puts `shutdown` on `Stream` rather than `Socket`, but a `Stream` is a `Socket`
+with a different name on it and the operation is on the handle.
 
 **Why not a timeout-based wakeup:** that is finding 2, which is what this design exists to
 avoid.
